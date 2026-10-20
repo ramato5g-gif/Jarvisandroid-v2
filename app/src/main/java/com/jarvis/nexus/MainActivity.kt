@@ -2,7 +2,7 @@ package com.jarvis.nexus
 
 import android.Manifest
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import android.content.ConnectivityManager
+import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.app.Activity
 import android.content.Intent

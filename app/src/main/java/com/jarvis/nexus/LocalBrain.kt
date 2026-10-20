@@ -16,8 +16,6 @@ class LocalBrain(private val context: Context) {
             val options = LlmInference.LlmInferenceOptions.builder()
                 .setModelPath(model.absolutePath)
                 .setMaxTokens(512)
-                .setTopK(40)
-                .setTemperature(0.65f)
                 .build()
             llm = LlmInference.createFromOptions(context, options)
         }
