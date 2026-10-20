@@ -1,58 +1,65 @@
-name: Build JARVIS NEXUS APK
+name: Build & Release JARVIS NEXUS APK
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # necessario per creare la Release
 
 jobs:
   build:
-    name: Build Android Debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
-      - name: Verify Android SDK
-        run: |
-          sdkmanager --list_installed
-
-      - name: Set up Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        shell: bash
+      - name: Keystore (se configurato)
+        if: env.KEYSTORE_BASE64 != ''
         run: |
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew --no-daemon --stacktrace :app:assembleDebug
-          else
-            gradle --no-daemon --stacktrace :app:assembleDebug
-          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+      - name: Build release APK
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
+
+      - name: Rinomina APK
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk "out/JARVIS-NEXUS-v3.0.${{ github.run_number }}.apk"
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-NEXUS-debug-APK
-          path: app/build/outputs/apk/debug/*.apk
+          name: JARVIS-NEXUS-APK
+          path: out/*.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Pubblica GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v3.0.${{ github.run_number }}
+          name: JARVIS NEXUS v3.0.${{ github.run_number }}
+          body: "Build automatica da ${{ github.sha }}"
+          files: out/*.apk
+          make_latest: true
