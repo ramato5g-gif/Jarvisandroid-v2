@@ -5,6 +5,9 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.DownloadManager
 import android.app.SearchManager
+import android.app.StatusBarManager
+import android.app.role.RoleManager
+import android.content.ComponentName
 import android.bluetooth.BluetoothManager
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -23,6 +26,7 @@ import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.Environment
 import android.os.StatFs
 import android.provider.AlarmClock
@@ -31,7 +35,10 @@ import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -42,6 +49,7 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -191,7 +199,9 @@ private fun actionIcon(a: String): ImageVector = when (a) {
     else -> Icons.Rounded.Bolt
 }
 
-class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
+open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
+    /** true nella finestra rapida (AssistActivity), false nell'app completa. */
+    protected open val assistMode: Boolean = false
     private lateinit var brain: LocalBrain
     private var tts: TextToSpeech? = null
     private val prefs by lazy { getSharedPreferences("nexus_local", MODE_PRIVATE) }
@@ -219,6 +229,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var activeModelPath by mutableStateOf("")
     private var hfToken by mutableStateOf("")
     private var modelsVersion by mutableStateOf(0)
+    private var recognizer: SpeechRecognizer? = null
+    private var liveText by mutableStateOf("")
+    private var micLevel by mutableStateOf(0f)
+    private var voiceTurn = false
+    private var followUp = false
+    private var resumeTick by mutableStateOf(0)
 
     private val accent: Color get() = if (altTheme) NeonBlue else NeonRed
     private val accent2: Color get() = if (altTheme) NeonRed else NeonBlue
@@ -259,7 +275,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         listening = false
         if (result.resultCode == Activity.RESULT_OK) {
             val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
-            if (!spoken.isNullOrBlank()) { screen = Screen.CHAT; send(spoken) }
+            if (!spoken.isNullOrBlank()) { voiceTurn = true; if (!assistMode) screen = Screen.CHAT; send(spoken) }
         }
     }
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
@@ -287,18 +303,45 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         notes.addAll(parseList(prefs.getString("notes", "") ?: "", "• "))
         tasks.addAll(parseList(prefs.getString("tasks", "") ?: "", "□ "))
         routines.forEach { routineOn[it.id] = prefs.getBoolean("routine_${it.id}", it.id == "morning") }
-        messages.add(Line("JARVIS", "Ciao $userName. Sono JARVIS, il tuo assistente. Come posso aiutarti?"))
+        if (!assistMode) messages.add(Line("JARVIS", "Ciao $userName. Sono JARVIS, il tuo assistente. Come posso aiutarti?"))
         tts = TextToSpeech(this, this)
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) {
+                runOnUiThread {
+                    if (assistMode && followUp && !isFinishing && !isDestroyed && !listening && !isBusy) { followUp = false; listen() }
+                }
+            }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {}
+        })
         scope.launch(Dispatchers.IO) { try { loadApps() } catch (e: Exception) { } }
         localModels.forEach { m ->
             val id = prefs.getLong("dl_${m.id}", -1L)
             if (id >= 0) { downloads[m.id] = -1f; scope.launch { pollDownload(m, id) } }
         }
-        setContent { NexusApp() }
+        if (assistMode) stats = try { readStats() } catch (e: Exception) { DevStats() }
+        setContent { if (assistMode) AssistOverlay() else NexusApp() }
+        if (assistMode) listen()
     }
     override fun onInit(status: Int) { if (status == TextToSpeech.SUCCESS) tts?.language = Locale.ITALIAN }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (assistMode && !listening) listen()
+    }
+    override fun onResume() { super.onResume(); resumeTick++ }
+    override fun onStop() {
+        super.onStop()
+        // La finestra rapida si chiude quando un'azione apre un'altra app
+        if (assistMode && !isChangingConfigurations) finish()
+    }
     override fun onDestroy() {
-        brain.unload(); tts?.stop(); tts?.shutdown(); scope.cancel()
+        recognizer?.destroy(); recognizer = null
+        brain.unload()
+        val t = tts
+        if (assistMode && t?.isSpeaking == true) Handler(mainLooper).postDelayed({ t.shutdown() }, 8000)
+        else { t?.stop(); t?.shutdown() }
+        scope.cancel()
         super.onDestroy()
     }
 
@@ -315,18 +358,61 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun greeting(): String = when (Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {
         in 5..12 -> "Buongiorno"; in 13..17 -> "Buon pomeriggio"; else -> "Buonasera"
     }
+    /** Riconoscimento vocale integrato: niente popup, testo live sul nucleo. */
     private fun startListening() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) { startListeningPopup(); return }
+        try {
+            tts?.stop()
+            val r = recognizer ?: SpeechRecognizer.createSpeechRecognizer(this).also { recognizer = it }
+            r.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) { listening = true; liveText = "" }
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) { micLevel = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f) }
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() { micLevel = 0f }
+                override fun onError(error: Int) {
+                    listening = false; micLevel = 0f
+                    val silent = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                    if (assistMode && silent) { Handler(mainLooper).postDelayed({ if (!listening && !isBusy) finish() }, 1200); return }
+                    if (!silent) sys("Riconoscimento vocale non riuscito (errore $error).")
+                }
+                override fun onResults(results: Bundle?) {
+                    listening = false; micLevel = 0f
+                    val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                    if (!t.isNullOrBlank()) {
+                        liveText = t; voiceTurn = true
+                        if (!assistMode) screen = Screen.CHAT
+                        send(t)
+                    }
+                }
+                override fun onPartialResults(partialResults: Bundle?) {
+                    partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.let { if (it.isNotBlank()) liveText = it }
+                }
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+            liveText = ""
+            listening = true
+            r.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "it-IT")
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+            })
+        } catch (e: Exception) { listening = false; startListeningPopup() }
+    }
+    private fun startListeningPopup() {
         try {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "it-IT")
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             }
             listening = true
             voicePicker.launch(intent)
         } catch (e: Exception) { listening = false; err("Riconoscimento vocale non disponibile.") }
     }
+    private fun stopListening() { recognizer?.stopListening(); listening = false; micLevel = 0f }
     private fun listen() {
+        if (listening) { stopListening(); return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startListening()
         else audioPermission.launch(Manifest.permission.RECORD_AUDIO)
     }
@@ -433,6 +519,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun reply(text: String, engine: String) {
+        if (voiceTurn) { followUp = assistMode; voiceTurn = false }
         engineStatus = engine
         messages.add(Line("JARVIS", text))
         speak(text)
@@ -990,7 +1077,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             screen = Screen.CHAT
                         })
-                }, isBusy, listening, ripple.value)
+                }, isBusy, listening, ripple.value, micLevel)
                 val mono = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 9.sp, color = Muted, lineHeight = 13.sp)
                 Column(Modifier.align(Alignment.TopStart)) {
                     Text(Build.MODEL, style = mono, color = Color.White)
@@ -1004,7 +1091,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                     Text("TEMP %.0f°C".format(Locale.ITALIAN, stats.temp), style = mono)
                     Text(if (stats.online) "NET  OK" else "NET  --", style = mono)
                 }
-                Text(if (isBusy) "ELABORAZIONE…" else if (listening) "ASCOLTO…" else "TOCCA IL NUCLEO PER PARLARE",
+                Text(if (isBusy) "ELABORAZIONE…" else if (listening) (liveText.ifBlank { "ASCOLTO…" }) else "TOCCA IL NUCLEO PER PARLARE",
                     Modifier.align(Alignment.BottomCenter), color = accent, fontSize = 10.sp, letterSpacing = 2.sp)
             }
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1061,7 +1148,11 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                     "Timer 5 minuti" to Icons.Rounded.Timer, "Accendi la torcia" to Icons.Rounded.FlashlightOn)
                 items(sugg) { (t, ic) -> Chip(t, ic, accent2) { send(t) } }
             }
-            if (listening) Waveform(Modifier.fillMaxWidth().height(40.dp).padding(bottom = 6.dp))
+            if (listening) {
+                if (liveText.isNotBlank()) Text("“$liveText”", color = Color.White, fontSize = 15.sp, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                Waveform(Modifier.fillMaxWidth().height(40.dp).padding(bottom = 6.dp))
+            }
             CommandBar { send(it) }
             Spacer(Modifier.height(8.dp))
         }
@@ -1328,6 +1419,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                 Text("La chiave resta sul telefono (non cifrata). I messaggi inviati a Gemini lasciano il dispositivo: niente dati sensibili.",
                     color = Muted, fontSize = 10.sp)
             }
+            QuickAccessCard()
             ModelsCard()
             NeonCard(Modifier.fillMaxWidth(), Stroke1) {
                 Text("INTERFACCIA", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
@@ -1344,6 +1436,97 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
             Text("J.A.R.V.I.S. NEXUS 3.0 • Kotlin + Jetpack Compose", color = Muted, fontSize = 10.sp,
                 textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
+        }
+    }
+
+    private fun isAssistant(): Boolean = try {
+        Build.VERSION.SDK_INT >= 29 && getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_ASSISTANT)
+    } catch (e: Exception) { false }
+
+    private fun openAssistantSettings() {
+        if (!tryStart(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)) && !tryStart(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)))
+            tryStart(Intent(Settings.ACTION_SETTINGS))
+    }
+
+    private fun requestTile() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                getSystemService(StatusBarManager::class.java).requestAddTileService(
+                    ComponentName(this, JarvisTileService::class.java), "JARVIS",
+                    android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_tile), mainExecutor
+                ) { _ -> }
+            } catch (e: Exception) { err("Aggiungi il riquadro JARVIS dal pannello rapido (matita → trascina).") }
+        } else sys("Apri il pannello rapido, tocca la matita e trascina il riquadro JARVIS.")
+    }
+
+    @Composable
+    private fun QuickAccessCard() {
+        val tick = resumeTick
+        val held = tick >= 0 && isAssistant()
+        NeonCard(Modifier.fillMaxWidth(), if (held) Green else accent) {
+            Text("ACCESSO RAPIDO (SENZA APRIRE L'APP)", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Assistente predefinito", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(if (held) "Attivo ✓" else "Non impostato", color = if (held) Green else Muted, fontSize = 11.sp)
+                }
+                TextButton(onClick = { openAssistantSettings() }) { Text(if (held) "CAMBIA" else "IMPOSTA", color = accent2, fontSize = 12.sp) }
+            }
+            Text("1) Assistente digitale → JARVIS.  2) Impostazioni → Funzioni avanzate → Tasto laterale → Tieni premuto → Assistente digitale.",
+                color = Muted, fontSize = 10.sp)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Riquadro nel pannello rapido", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Scorri giù dalla barra di stato → JARVIS", color = Muted, fontSize = 11.sp)
+                }
+                TextButton(onClick = { requestTile() }) { Text("AGGIUNGI", color = accent2, fontSize = 12.sp) }
+            }
+            Text("Anche: tieni premuta l'icona di JARVIS → \"Parla con JARVIS\".", color = Muted, fontSize = 10.sp)
+        }
+    }
+
+    // ───────────── Finestra rapida (assistente) ─────────────
+    @Composable
+    private fun AssistOverlay() {
+        val lastJarvis = messages.lastOrNull { it.who == "JARVIS" }?.message
+        val lastUser = messages.lastOrNull { it.who == "TU" }?.message
+        val lastErr = messages.lastOrNull { it.who == "ERROR" || it.who == "SYSTEM" }?.message
+        val shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        MaterialTheme(colorScheme = darkColorScheme(primary = accent, secondary = accent2, background = Bg, surface = Panel, onSurface = Color.White)) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .55f))
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { finish() }) {
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .clip(shape).background(Brush.verticalGradient(listOf(Panel2, Bg)))
+                    .border(1.dp, Brush.horizontalGradient(listOf(accent, accent2)), shape)
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }
+                    .navigationBarsPadding().imePadding()
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.size(width = 40.dp, height = 4.dp).background(Stroke1, RoundedCornerShape(2.dp)))
+                    Box(Modifier.size(160.dp).pointerInput(Unit) { detectTapGestures(onTap = { listen() }) }) {
+                        HudCore(Modifier.fillMaxSize(), isBusy, listening, 0f, micLevel)
+                    }
+                    Text(when { isBusy -> "ELABORAZIONE…"; listening -> "TI ASCOLTO"; else -> "TOCCA IL NUCLEO PER PARLARE" },
+                        color = accent, fontSize = 11.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
+                    val heard = if (listening) liveText else (lastUser ?: "")
+                    if (heard.isNotBlank()) Text("“$heard”", color = if (listening) Color.White else Muted, fontSize = 16.sp, textAlign = TextAlign.Center)
+                    if (!listening && !isBusy) {
+                        val answer = lastJarvis ?: lastErr ?: "${greeting()}, $userName. Come posso aiutarti?"
+                        Text(answer, color = Color.White, fontSize = 15.sp, textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState()))
+                    }
+                    if (listening) Waveform(Modifier.fillMaxWidth().height(36.dp))
+                    CommandBar { voiceTurn = false; send(it) }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        TextButton(onClick = { startActivity(Intent(this@MainActivity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); finish() }) {
+                            Text("APRI JARVIS", color = accent2, fontSize = 12.sp)
+                        }
+                        TextButton(onClick = { finish() }) { Text("CHIUDI", color = Muted, fontSize = 12.sp) }
+                    }
+                }
+            }
         }
     }
 
@@ -1584,7 +1767,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
     }
 
     @Composable
-    private fun HudCore(modifier: Modifier, busy: Boolean, listen: Boolean, ripple: Float = 0f) {
+    private fun HudCore(modifier: Modifier, busy: Boolean, listen: Boolean, ripple: Float = 0f, level: Float = 0f) {
         val red = accent; val blue = accent2
         val inf = rememberInfiniteTransition(label = "hud")
         val spin by inf.animateFloat(0f, 360f, infiniteRepeatable(tween(if (busy) 4000 else 16000, easing = LinearEasing)), label = "spin")
@@ -1622,7 +1805,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
             drawCircle(Brush.radialGradient(listOf(Color(0xFF0E2546), Color(0xFF050912)), center = c, radius = r * .48f), r * .48f, c)
             drawCircle(blue.copy(alpha = .85f), r * .48f, c, style = Stroke(3f))
 
-            val s = r * .28f * pulse
+            val s = r * .28f * (pulse + level * .3f)
             val tri = Path().apply { moveTo(c.x - s, c.y - s * .55f); lineTo(c.x + s, c.y - s * .55f); lineTo(c.x, c.y + s); close() }
             drawCircle(Brush.radialGradient(listOf(blue.copy(alpha = .55f), Color.Transparent), center = c, radius = s * 1.8f), s * 1.8f, c)
             drawPath(tri, Brush.verticalGradient(listOf(Color(0xFFA6ECFF), blue, Color(0xFF0A46C8)), startY = c.y - s, endY = c.y + s))
