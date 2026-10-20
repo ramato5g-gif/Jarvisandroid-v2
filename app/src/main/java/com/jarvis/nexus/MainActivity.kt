@@ -94,7 +94,9 @@ private val Muted = Color(0xFF8593A8)
 
 private data class Line(val who: String, val message: String)
 private enum class Screen { HOME, CHAT, MODULES, MODULE, DEVICE, AUTOMATE, MEMORY, SETTINGS }
-private data class Module(val id: String, val title: String, val sub: String, val icon: ImageVector, val actions: List<String> = emptyList())
+private data class Module(val id: String, val sub: String, val icon: ImageVector, val actions: List<String> = emptyList()) {
+    val title: String get() = id
+}
 private data class Routine(val id: String, val title: String, val desc: String, val icon: ImageVector)
 private data class DevStats(
     val battery: Int = 0, val charging: Boolean = false, val temp: Float = 0f,
