@@ -3,6 +3,8 @@ package com.jarvis.nexus
 import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
+import android.app.DownloadManager
+import android.app.SearchManager
 import android.bluetooth.BluetoothManager
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -13,6 +15,7 @@ import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.location.LocationManager
+import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -24,7 +27,9 @@ import android.os.Environment
 import android.os.StatFs
 import android.provider.AlarmClock
 import android.provider.CalendarContract
+import android.provider.ContactsContract
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
@@ -36,6 +41,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -59,6 +65,9 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -73,12 +82,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 // ───────────────────────── Palette ─────────────────────────
@@ -106,7 +118,7 @@ private data class DevStats(
 )
 
 private val modules = listOf(
-    Module("AI CORE", "Modello locale", Icons.Rounded.Psychology, listOf("Importa modello", "Gemini", "Cancella chat")),
+    Module("AI CORE", "Modello locale", Icons.Rounded.Psychology, listOf("Modelli locali", "Gemini", "Cancella chat")),
     Module("VOICE", "STT / TTS", Icons.Rounded.GraphicEq, listOf("Voce", "Test voce")),
     Module("MEMORY", "Note e attività", Icons.Rounded.Storage),
     Module("DEVICE", "Controllo Android", Icons.Rounded.PhoneAndroid),
@@ -115,6 +127,24 @@ private val modules = listOf(
     Module("WORK", "Produttività", Icons.Rounded.Work, listOf("Email", "Calendario", "File", "Condividi", "Esporta note", "Copia note")),
     Module("HEALTH", "Promemoria", Icons.Rounded.Favorite, listOf("Farmaco", "Acqua", "Timer", "Promemoria")),
     Module("NETWORK", "Rete e connessioni", Icons.Rounded.Wifi, listOf("Wi-Fi", "Bluetooth", "Dati mobili", "NFC", "Browser", "Mappe")),
+)
+
+private data class LocalModel(
+    val id: String, val name: String, val desc: String, val url: String,
+    val file: String, val size: String, val bytes: Long, val needsToken: Boolean
+)
+private data class DlState(val status: Int, val done: Long, val total: Long, val reason: Int)
+
+private val localModels = listOf(
+    LocalModel("qwen25-1.5b", "Qwen 2.5 1.5B Instruct", "Consigliato • buon italiano • nessun account",
+        "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task",
+        "Qwen2.5-1.5B-Instruct_q8_ekv1280.task", "~1,6 GB", 1_700_000_000L, false),
+    LocalModel("gemma3-1b", "Gemma 3 1B IT", "Leggero e veloce • serve token HF",
+        "https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/Gemma3-1B-IT_multi-prefill-seq_q4_ekv2048.task",
+        "Gemma3-1B-IT_q4_ekv2048.task", "~0,6 GB", 600_000_000L, true),
+    LocalModel("gemma3n-e2b", "Gemma 3n E2B", "Il più capace • token HF • sperimentale",
+        "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task",
+        "gemma-3n-E2B-it-int4.task", "~3,1 GB", 3_200_000_000L, true),
 )
 
 private val routines = listOf(
@@ -128,6 +158,7 @@ private fun actionIcon(a: String): ImageVector = when (a) {
     "Voce" -> Icons.Rounded.Mic
     "Test voce" -> Icons.Rounded.RecordVoiceOver
     "Importa modello" -> Icons.Rounded.Download
+    "Modelli locali" -> Icons.Rounded.CloudDownload
     "Gemini" -> Icons.Rounded.VpnKey
     "Cancella chat" -> Icons.Rounded.DeleteSweep
     "Stato" -> Icons.Rounded.Speed
@@ -182,6 +213,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var altTheme by mutableStateOf(false)
     private var torchEnabled by mutableStateOf(false)
     private var stats by mutableStateOf(DevStats())
+    @Volatile private var launcherApps: List<Pair<String, String>> = emptyList()
+    private var pendingAfterPerm: (() -> Unit)? = null
+    private val downloads = mutableStateMapOf<String, Float>()
+    private var activeModelPath by mutableStateOf("")
+    private var hfToken by mutableStateOf("")
+    private var modelsVersion by mutableStateOf(0)
 
     private val accent: Color get() = if (altTheme) NeonBlue else NeonRed
     private val accent2: Color get() = if (altTheme) NeonRed else NeonBlue
@@ -204,14 +241,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (uri != null) scope.launch {
             isBusy = true
             try {
-                withContext(Dispatchers.IO) {
-                    brain.unload()
-                    contentResolver.openInputStream(uri)!!.use { input ->
-                        File(filesDir, "model.bin").outputStream().use { output -> input.copyTo(output) }
-                    }
+                val dest = withContext(Dispatchers.IO) {
+                    val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "model.task"
+                    val ext = name.substringAfterLast('.', "task").lowercase().take(8)
+                    brain.modelFile = null
+                    val f = File(filesDir, "imported.$ext")
+                    contentResolver.openInputStream(uri)!!.use { input -> f.outputStream().use { output -> input.copyTo(output) } }
+                    f
                 }
-                modelLoaded = brain.available()
-                sys("Modello importato. L'inferenza dipende dalla compatibilità del file.")
+                activateModel(dest, "Modello importato")
             } catch (e: Exception) { err("Importazione modello fallita: ${e.message}") }
             finally { isBusy = false }
         }
@@ -223,8 +262,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             if (!spoken.isNullOrBlank()) { screen = Screen.CHAT; send(spoken) }
         }
     }
-    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) quickAction("Torcia") else sys("Permesso fotocamera negato.")
+    private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
+        val p = pendingAfterPerm; pendingAfterPerm = null
+        if (res.values.all { it }) p?.invoke() else reply("Permesso negato: non posso completare l'azione.", "SISTEMA")
     }
     private val audioPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startListening() else sys("Permesso microfono negato.")
@@ -235,6 +275,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         brain = LocalBrain(this)
+        hfToken = prefs.getString("hf_token", "") ?: ""
+        activeModelPath = prefs.getString("model_path", "") ?: ""
+        if (activeModelPath.isEmpty() && File(filesDir, "model.bin").exists()) activeModelPath = File(filesDir, "model.bin").absolutePath
+        if (activeModelPath.isNotEmpty()) brain.modelFile = File(activeModelPath)
         modelLoaded = brain.available()
         apiKey = prefs.getString("gemini_api_key", "") ?: ""
         onlineEnabled = prefs.getBoolean("gemini_enabled", true)
@@ -245,6 +289,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         routines.forEach { routineOn[it.id] = prefs.getBoolean("routine_${it.id}", it.id == "morning") }
         messages.add(Line("JARVIS", "Ciao $userName. Sono JARVIS, il tuo assistente. Come posso aiutarti?"))
         tts = TextToSpeech(this, this)
+        scope.launch(Dispatchers.IO) { try { loadApps() } catch (e: Exception) { } }
+        localModels.forEach { m ->
+            val id = prefs.getLong("dl_${m.id}", -1L)
+            if (id >= 0) { downloads[m.id] = -1f; scope.launch { pollDownload(m, id) } }
+        }
         setContent { NexusApp() }
     }
     override fun onInit(status: Int) { if (status == TextToSpeech.SUCCESS) tts?.language = Locale.ITALIAN }
@@ -337,7 +386,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             "Voce" -> listen()
             "Test voce" -> speak("Sistemi online. Tutti i moduli sono operativi, $userName.")
             "Importa modello" -> modelPicker.launch(arrayOf("application/octet-stream", "*/*"))
-            "Gemini" -> screen = Screen.SETTINGS
+            "Gemini", "Modelli locali" -> screen = Screen.SETTINGS
             "Cancella chat" -> { messages.clear(); messages.add(Line("JARVIS", "Conversazione cancellata.")) }
             "Esporta note" -> exportFile.launch("jarvis-note.txt")
             "Importa note" -> importText.launch(arrayOf("text/plain", "*/*"))
@@ -374,17 +423,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             "Archiviazione" -> launchSafe(Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS), "Archiviazione aperta.")
             "App" -> launchSafe(Intent(Settings.ACTION_APPLICATION_SETTINGS), "Impostazioni app aperte.")
             "Impostazioni" -> launchSafe(Intent(Settings.ACTION_SETTINGS), "Impostazioni aperte.")
-            "Torcia" -> try {
-                if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                    cameraPermission.launch(Manifest.permission.CAMERA); return
-                }
-                val camera = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-                val id = camera.cameraIdList.firstOrNull { camera.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true }
-                if (id == null) sys("Flash non disponibile.") else {
-                    torchEnabled = !torchEnabled; camera.setTorchMode(id, torchEnabled)
-                    sys(if (torchEnabled) "Torcia accesa." else "Torcia spenta.")
-                }
-            } catch (e: Exception) { err("Torcia: ${e.message}") }
+            "Torcia" -> sys(setTorch(null).msg)
             "Stato" -> {
                 val s = readStats()
                 sys("Batteria ${s.battery}% • RAM usata ${s.ramPct}% • Libero %.1f GB • Temp %.1f °C".format(Locale.ITALIAN, s.storageFree, s.temp))
@@ -393,51 +432,494 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    private fun reply(text: String, engine: String) {
+        engineStatus = engine
+        messages.add(Line("JARVIS", text))
+        speak(text)
+    }
+
+    /** Risposte immediate su dati del telefono. */
+    private fun localAnswer(n: String): String? = when {
+        n.contains("briefing") -> {
+            val s = readStats()
+            val ora = SimpleDateFormat("HH:mm", Locale.ITALIAN).format(Date())
+            val data = SimpleDateFormat("EEEE d MMMM", Locale.ITALIAN).format(Date())
+            "${greeting()}, $userName. Sono le $ora di $data. Batteria al ${s.battery}%" +
+                (if (s.charging) " in carica" else "") + ". Hai ${tasks.size} attività e ${notes.size} note."
+        }
+        n == "ora" || n.contains("che ore") -> "Sono le " + SimpleDateFormat("HH:mm", Locale.ITALIAN).format(Date()) + "."
+        n.contains("che giorno") || n == "data" -> "Oggi è " + SimpleDateFormat("EEEE d MMMM yyyy", Locale.ITALIAN).format(Date()) + "."
+        n == "mostra attività" -> if (tasks.isEmpty()) "Nessuna attività." else tasks.joinToString("\n") { "□ $it" }
+        n == "cancella attività" -> { tasks.clear(); saveLists(); "Attività eliminate." }
+        n == "mostra note" || n == "leggi note" -> if (notes.isEmpty()) "Nessuna nota." else notes.joinToString("\n") { "• $it" }
+        n == "cancella note" -> { notes.clear(); saveLists(); "Note eliminate." }
+        n.contains("batteria") && !n.contains("impostazion") && !n.contains("risparmio") && !n.startsWith("apri") -> {
+            val s = readStats(); "Batteria al ${s.battery}%" + (if (s.charging) ", in carica." else ".")
+        }
+        else -> null
+    }
+
+    private fun buildTurns(): List<Pair<String, String>> {
+        val out = mutableListOf<Pair<String, String>>()
+        messages.filter { it.who == "TU" || it.who == "JARVIS" }.takeLast(14).forEach { m ->
+            val role = if (m.who == "TU") "user" else "model"
+            if (out.isEmpty() && role == "model") return@forEach
+            if (out.isNotEmpty() && out.last().first == role) out[out.lastIndex] = role to (out.last().second + "\n" + m.message)
+            else out.add(role to m.message)
+        }
+        return out
+    }
+
+    private fun systemPrompt(): String {
+        val now = SimpleDateFormat("EEEE d MMMM yyyy, HH:mm", Locale.ITALIAN).format(Date())
+        return """Sei J.A.R.V.I.S., l'assistente personale di $userName su uno smartphone Android (${Build.MANUFACTURER} ${Build.MODEL}).
+Rispondi sempre in italiano, in modo conciso (massimo 3 frasi), naturale da ascoltare a voce: niente markdown, elenchi o emoji. Tono cortese e brillante, come il JARVIS di Iron Man.
+Data e ora attuali: $now. Batteria: ${stats.battery}%.
+Se l'utente chiede di compiere un'azione sul telefono, la PRIMA riga della risposta deve essere esattamente
+AZIONE: {json su una sola riga}
+seguita da una breve frase di conferma. Azioni disponibili:
+{"type":"open","app":"nome app o impostazione"}
+{"type":"call","who":"nome contatto o numero"}
+{"type":"sms","who":"...","text":"..."}
+{"type":"whatsapp","who":"...","text":"..."}
+{"type":"email","to":"indirizzo","subject":"...","body":"..."}
+{"type":"alarm","hour":7,"minute":30,"label":"..."}
+{"type":"timer","seconds":600,"label":"..."}
+{"type":"event","title":"...","start":"yyyy-MM-ddTHH:mm","end":"yyyy-MM-ddTHH:mm"}
+{"type":"navigate","to":"destinazione"}
+{"type":"search","q":"..."}
+{"type":"play","q":"brano o artista"}
+{"type":"torch","on":true}
+{"type":"volume","level":50}  oppure  {"type":"volume","dir":"up"}
+{"type":"settings","page":"wifi|bluetooth|posizione|nfc|dati|aereo|non disturbare|batteria|schermo|suoni|app|generali"}
+{"type":"note","text":"..."}
+{"type":"task","text":"..."}
+{"type":"camera"}
+Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuori da questo elenco. Per domande normali rispondi senza riga AZIONE."""
+    }
+
     private fun send(raw: String) {
         val q = raw.trim()
         if (q.isBlank() || isBusy) return
         messages.add(Line("TU", q))
         val n = q.lowercase(Locale.ITALIAN)
-        val answer: String? = when {
-            n.contains("briefing") -> {
-                val s = readStats()
-                val ora = SimpleDateFormat("HH:mm", Locale.ITALIAN).format(Date())
-                val data = SimpleDateFormat("EEEE d MMMM", Locale.ITALIAN).format(Date())
-                "${greeting()}, $userName. Sono le $ora di $data. Batteria al ${s.battery}%" +
-                    (if (s.charging) " in carica" else "") + ". Hai ${tasks.size} attività e ${notes.size} note."
-            }
-            n == "ora" || n.contains("che ore") -> "Sono le " + SimpleDateFormat("HH:mm", Locale.ITALIAN).format(Date()) + "."
-            n.contains("che giorno") || n == "data" -> "Oggi è " + SimpleDateFormat("EEEE d MMMM yyyy", Locale.ITALIAN).format(Date()) + "."
-            n.startsWith("ricorda ") -> { notes.add(q.substringAfter(" ")); saveLists(); "Nota salvata in locale." }
-            n.startsWith("attività ") -> { tasks.add(q.substringAfter(" ")); saveLists(); "Attività aggiunta." }
-            n == "mostra attività" -> if (tasks.isEmpty()) "Nessuna attività." else tasks.joinToString("\n") { "□ $it" }
-            n == "cancella attività" -> { tasks.clear(); saveLists(); "Attività eliminate." }
-            n == "mostra note" || n == "leggi note" -> if (notes.isEmpty()) "Nessuna nota." else notes.joinToString("\n") { "• $it" }
-            n == "cancella note" -> { notes.clear(); saveLists(); "Note eliminate." }
-            n.startsWith("cerca web ") -> { launchSafe(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + Uri.encode(q.substringAfter("cerca web ")))), "Ricerca aperta."); "Ricerca avviata nel browser." }
-            n.startsWith("naviga ") -> { launchSafe(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(q.substringAfter("naviga ")))), "Navigazione aperta."); "Mappe aperte." }
-            n.contains("apri impostazioni") -> { launchSafe(Intent(Settings.ACTION_SETTINGS), "Impostazioni aperte."); "Fatto." }
-            n.contains("torcia") -> { quickAction("Torcia"); "Torcia commutata." }
-            n.contains("batteria") -> { val s = readStats(); "Batteria al ${s.battery}%" + (if (s.charging) ", in carica." else ".") }
-            else -> null
-        }
-        if (answer != null) { messages.add(Line("JARVIS", answer)); speak(answer); return }
+        localAnswer(n)?.let { reply(it, "LOCALE"); return }
+        Commands.parse(q)?.let { cmd -> reply(execute(cmd).msg, "COMANDO"); return }
+
         isBusy = true
         engineStatus = "ELABORAZIONE"
-        val context = messages.takeLast(8).joinToString("\n") { "${it.who}: ${it.message}" }
+        val turns = buildTurns()
+        val system = systemPrompt()
+        val ctx = messages.takeLast(8).joinToString("\n") { "${it.who}: ${it.message}" }
+        val useCloud = onlineEnabled && apiKey.isNotBlank()
+        val key = apiKey
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                if (onlineEnabled && apiKey.isNotBlank() && hasInternet()) {
-                    try { Pair("GEMINI", GeminiClient.ask(apiKey, q, context)) }
-                    catch (e: Exception) {
-                        Pair("LOCALE", try { brain.respond(q, context) } catch (l: Exception) { "Gemini non disponibile (${e.message}). Modello locale non avviabile: ${l.message}" })
-                    }
-                } else Pair("LOCALE", try { brain.respond(q, context) } catch (e: Exception) { "Motore locale non disponibile: ${e.message}" })
+            var engine = "LOCALE"
+            var cmd: Cmd? = null
+            var cloudError: String? = null
+            val text = withContext(Dispatchers.IO) {
+                var out: String? = null
+                if (useCloud) {
+                    try {
+                        val parsed = Commands.fromGemini(GeminiClient.chat(key, system, turns))
+                        cmd = parsed.first; out = parsed.second; engine = "GEMINI"
+                    } catch (e: Exception) { cloudError = e.message }
+                }
+                out ?: if (brain.available()) {
+                    try { brain.respond(q, ctx) } catch (e: Exception) { "Motore locale non disponibile: ${e.message}" }
+                } else if (!useCloud) "Configura la API key di Gemini nella sezione Sistema, oppure importa un modello locale."
+                else "Gemini non è raggiungibile e non c'è un modello locale di riserva."
             }
-            engineStatus = result.first
-            messages.add(Line("JARVIS", result.second))
-            speak(result.second)
+            cloudError?.let { sys("Gemini non disponibile: $it") }
+            val c = cmd
+            if (c != null) {
+                val r = execute(c)
+                reply(if (!r.ok || text.isBlank()) r.msg else text, "GEMINI")
+            } else reply(text.ifBlank { "Fatto." }, engine)
             isBusy = false
+        }
+    }
+
+    // ───────────── Esecuzione azioni ─────────────
+    private fun ok(m: String) = Outcome(true, m)
+    private fun fail(m: String) = Outcome(false, m)
+    private fun tryStart(i: Intent): Boolean = try { startActivity(i); true } catch (e: Exception) { false }
+
+    private fun execute(c: Cmd): Outcome = try {
+        when (c.type) {
+            "open" -> openApp(c["app"])
+            "call", "sms", "whatsapp" -> contactAction(c)
+            "email" -> {
+                val i = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:")).apply {
+                    if (c["to"].contains("@")) putExtra(Intent.EXTRA_EMAIL, arrayOf(c["to"]))
+                    putExtra(Intent.EXTRA_SUBJECT, c["subject"]); putExtra(Intent.EXTRA_TEXT, c["body"])
+                }
+                if (tryStart(i)) ok("Email pronta da inviare.") else fail("Nessuna app email disponibile.")
+            }
+            "alarm" -> {
+                val h = c["hour"].toIntOrNull()
+                val m = c["minute"].toIntOrNull() ?: 0
+                if (h == null) { if (tryStart(Intent(AlarmClock.ACTION_SET_ALARM))) ok("Apro le sveglie.") else fail("App orologio non disponibile.") }
+                else if (tryStart(Intent(AlarmClock.ACTION_SET_ALARM).putExtra(AlarmClock.EXTRA_HOUR, h).putExtra(AlarmClock.EXTRA_MINUTES, m)
+                        .putExtra(AlarmClock.EXTRA_MESSAGE, c["label"].ifBlank { "JARVIS" }).putExtra(AlarmClock.EXTRA_SKIP_UI, true)))
+                    ok("Sveglia impostata alle %d:%02d.".format(h, m))
+                else fail("Non riesco a impostare la sveglia.")
+            }
+            "timer" -> {
+                val sec = c["seconds"].toIntOrNull()
+                if (sec == null || sec <= 0) { if (tryStart(Intent(AlarmClock.ACTION_SET_TIMER))) ok("Apro il timer.") else fail("Timer non disponibile.") }
+                else if (tryStart(Intent(AlarmClock.ACTION_SET_TIMER).putExtra(AlarmClock.EXTRA_LENGTH, sec)
+                        .putExtra(AlarmClock.EXTRA_MESSAGE, c["label"].ifBlank { "JARVIS" }).putExtra(AlarmClock.EXTRA_SKIP_UI, true)))
+                    ok("Timer di ${durata(sec)} avviato.")
+                else fail("Non riesco ad avviare il timer.")
+            }
+            "event" -> {
+                val i = Intent(Intent.ACTION_INSERT).setData(CalendarContract.Events.CONTENT_URI).putExtra(CalendarContract.Events.TITLE, c["title"])
+                parseIso(c["start"])?.let { st ->
+                    i.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, st)
+                    i.putExtra(CalendarContract.EXTRA_EVENT_END_TIME, parseIso(c["end"]) ?: (st + 3_600_000L))
+                }
+                if (tryStart(i)) ok("Evento pronto: confermalo nel calendario.") else fail("Calendario non disponibile.")
+            }
+            "navigate" -> if (tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=" + Uri.encode(c["to"])))) ||
+                tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(c["to"]))))) ok("Navigazione verso ${c["to"]}.")
+                else fail("Nessuna app di mappe disponibile.")
+            "search" -> if (tryStart(Intent(Intent.ACTION_WEB_SEARCH).putExtra(SearchManager.QUERY, c["q"])) ||
+                tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + Uri.encode(c["q"]))))) ok("Cerco ${c["q"]}.")
+                else fail("Nessun browser disponibile.")
+            "play" -> if (tryStart(Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).putExtra(SearchManager.QUERY, c["q"])
+                    .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")) ||
+                tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(c["q"]))))) ok("Riproduco ${c["q"]}.")
+                else fail("Nessuna app musicale disponibile.")
+            "torch" -> setTorch(when (c["on"]) { "true" -> true; "false" -> false; else -> null })
+            "volume" -> setVolume(c["level"].toIntOrNull(), c["dir"])
+            "settings" -> {
+                val action = settingsAction(Commands.norm("impostazioni " + c["page"])) ?: Settings.ACTION_SETTINGS
+                if (tryStart(Intent(action))) ok("Apro le impostazioni ${c["page"]}.") else fail("Impostazioni non disponibili.")
+            }
+            "note" -> { notes.add(c["text"]); saveLists(); ok("Nota salvata.") }
+            "task" -> { tasks.add(c["text"]); saveLists(); ok("Attività aggiunta.") }
+            "camera" -> if (tryStart(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA))) ok("Fotocamera pronta.") else fail("Fotocamera non disponibile.")
+            else -> fail("Azione non supportata: ${c.type}.")
+        }
+    } catch (e: Exception) { fail("Non ci sono riuscito: ${e.message}") }
+
+    private fun durata(s: Int): String = when {
+        s >= 3600 -> "${s / 3600} ore" + (if (s % 3600 >= 60) " e ${(s % 3600) / 60} minuti" else "")
+        s >= 60 -> "${s / 60} minuti" + (if (s % 60 > 0) " e ${s % 60} secondi" else "")
+        else -> "$s secondi"
+    }
+    private fun parseIso(v: String): Long? = try {
+        if (v.length < 16) null else SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.ITALIAN).parse(v.take(16))?.time
+    } catch (e: Exception) { null }
+
+    private fun loadApps() {
+        val pm = packageManager
+        launcherApps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+            .map { it.loadLabel(pm).toString() to it.activityInfo.packageName }
+            .filter { it.second != packageName }
+    }
+
+    private fun findApp(n: String): Pair<String, String>? {
+        if (launcherApps.isEmpty()) loadApps()
+        var best: Pair<String, String>? = null
+        var bestScore = Int.MAX_VALUE
+        for (a in launcherApps) {
+            val l = Commands.norm(a.first)
+            if (l.isEmpty()) continue
+            val sc = when {
+                l == n -> 0
+                l.startsWith(n) && n.length >= 2 -> 1
+                n.startsWith(l) && l.length >= 3 -> 2
+                l.contains(n) && n.length >= 3 -> 3
+                n.contains(l) && l.length >= 4 -> 4
+                else -> { val d = Commands.lev(l, n); if (d <= maxOf(1, n.length / 4)) 5 + d else Int.MAX_VALUE }
+            }
+            if (sc < bestScore) { bestScore = sc; best = a }
+        }
+        return best
+    }
+
+    private fun settingsAction(n: String): String? {
+        val isSet = n.startsWith("impostazion") || n.startsWith("settings") || n.startsWith("modalita")
+        fun k(vararg w: String) = w.any { n.contains(it) }
+        return when {
+            k("wifi") -> Settings.ACTION_WIFI_SETTINGS
+            k("bluetooth") -> Settings.ACTION_BLUETOOTH_SETTINGS
+            k("nfc") -> Settings.ACTION_NFC_SETTINGS
+            k("gps", "posizion", "localizzazion") -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
+            k("aereo") -> Settings.ACTION_AIRPLANE_MODE_SETTINGS
+            k("nondisturbare") -> "android.settings.ZEN_MODE_SETTINGS"
+            k("hotspot") -> Settings.ACTION_WIRELESS_SETTINGS
+            !isSet -> null
+            k("dati", "rete", "connession", "mobile") -> Settings.ACTION_WIRELESS_SETTINGS
+            k("batteri", "risparmio") -> Settings.ACTION_BATTERY_SAVER_SETTINGS
+            k("schermo", "display", "luminosit") -> Settings.ACTION_DISPLAY_SETTINGS
+            k("suon", "audio", "volume", "suoneria") -> Settings.ACTION_SOUND_SETTINGS
+            k("archiviazion", "memoria", "spazio") -> Settings.ACTION_INTERNAL_STORAGE_SETTINGS
+            k("lingua", "tastiera") -> Settings.ACTION_LOCALE_SETTINGS
+            k("dataeora", "orario") -> Settings.ACTION_DATE_SETTINGS
+            k("sicurezza") -> Settings.ACTION_SECURITY_SETTINGS
+            k("accessibilit") -> Settings.ACTION_ACCESSIBILITY_SETTINGS
+            k("app", "applicazion") -> Settings.ACTION_APPLICATION_SETTINGS
+            else -> Settings.ACTION_SETTINGS
+        }
+    }
+
+    private fun categoryIntent(n: String): Intent? {
+        fun sel(cat: String) = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, cat)
+        return when (n) {
+            "fotocamera", "camera", "macchinafotografica" -> Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+            "telefono", "tastierino", "dialer" -> Intent(Intent.ACTION_DIAL)
+            "messaggi", "sms" -> sel(Intent.CATEGORY_APP_MESSAGING)
+            "galleria" -> sel(Intent.CATEGORY_APP_GALLERY)
+            "calendario", "agenda" -> sel(Intent.CATEGORY_APP_CALENDAR)
+            "browser", "internet" -> sel(Intent.CATEGORY_APP_BROWSER)
+            "mappe", "mappa" -> sel(Intent.CATEGORY_APP_MAPS)
+            "email", "mail", "posta" -> sel(Intent.CATEGORY_APP_EMAIL)
+            "musica" -> sel(Intent.CATEGORY_APP_MUSIC)
+            "contatti", "rubrica" -> sel(Intent.CATEGORY_APP_CONTACTS)
+            "calcolatrice" -> sel(Intent.CATEGORY_APP_CALCULATOR)
+            "sveglia", "sveglie", "orologio" -> Intent(AlarmClock.ACTION_SHOW_ALARMS)
+            "file", "documenti", "archivio" -> sel(Intent.CATEGORY_APP_FILES)
+            else -> null
+        }
+    }
+
+    private fun openApp(name: String): Outcome {
+        val n = Commands.norm(name)
+        if (n.isEmpty()) return fail("Quale app devo aprire?")
+        settingsAction(n)?.let { return if (tryStart(Intent(it))) ok("Apro le impostazioni.") else fail("Impostazioni non disponibili.") }
+        categoryIntent(n)?.let { if (tryStart(it)) return ok("Apro $name.") }
+        val app = findApp(n) ?: return fail("Non trovo l'app $name.")
+        val i = packageManager.getLaunchIntentForPackage(app.second) ?: return fail("Non riesco ad aprire ${app.first}.")
+        return if (tryStart(i)) ok("Apro ${app.first}.") else fail("Non riesco ad aprire ${app.first}.")
+    }
+
+    private fun lookupContact(name: String): String? {
+        val target = Commands.norm(name)
+        if (target.isEmpty()) return null
+        var best: String? = null
+        var bestScore = Int.MAX_VALUE
+        val proj = arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER)
+        contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, proj, null, null, null)?.use { cur ->
+            while (cur.moveToNext()) {
+                val dn = cur.getString(0) ?: continue
+                val num = cur.getString(1) ?: continue
+                val l = Commands.norm(dn)
+                val sc = when {
+                    l == target -> 0
+                    l.startsWith(target) -> 1
+                    l.contains(target) -> 2
+                    else -> { val d = Commands.lev(l, target); if (d <= 2) 3 + d else Int.MAX_VALUE }
+                }
+                if (sc < bestScore) { bestScore = sc; best = num }
+            }
+        }
+        return best?.filter { it.isDigit() || it == '+' }
+    }
+
+    private fun waNumber(num: String): String {
+        var d = num.filter { it.isDigit() }
+        if (num.startsWith("00")) d = d.removePrefix("00")
+        else if (!num.startsWith("+") && d.length in 9..10 && (d.startsWith("3") || d.startsWith("0"))) d = "39$d"
+        return d
+    }
+
+    private fun contactAction(c: Cmd): Outcome {
+        val who = c["who"].trim()
+        if (who.isEmpty()) return fail("A chi?")
+        val digits = who.filter { it.isDigit() || it == '+' }
+        val num: String
+        if (digits.count { it.isDigit() } >= 5) num = digits
+        else {
+            if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                pendingAfterPerm = { reply(contactAction(c).msg, "COMANDO") }
+                permLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS))
+                return fail("Mi serve l'accesso alla rubrica: concedilo e procedo.")
+            }
+            num = lookupContact(who) ?: return fail("Non trovo $who in rubrica.")
+        }
+        return when (c.type) {
+            "call" -> when {
+                checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED -> {
+                    pendingAfterPerm = { reply(contactAction(c).msg, "COMANDO") }
+                    permLauncher.launch(arrayOf(Manifest.permission.CALL_PHONE))
+                    fail("Concedi il permesso per le chiamate e chiamo $who.")
+                }
+                tryStart(Intent(Intent.ACTION_CALL, Uri.parse("tel:$num"))) -> ok("Chiamo $who.")
+                else -> fail("Non riesco ad avviare la chiamata.")
+            }
+            "sms" -> if (tryStart(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$num")).putExtra("sms_body", c["text"])))
+                ok("Messaggio per $who pronto, premi invia.") else fail("Nessuna app SMS disponibile.")
+            else -> {
+                val uri = Uri.parse("https://api.whatsapp.com/send?phone=${waNumber(num)}&text=${Uri.encode(c["text"])}")
+                if (tryStart(Intent(Intent.ACTION_VIEW, uri).setPackage("com.whatsapp")) || tryStart(Intent(Intent.ACTION_VIEW, uri)))
+                    ok("WhatsApp aperto con $who" + (if (c["text"].isNotBlank()) ", messaggio pronto: premi invia." else "."))
+                else fail("WhatsApp non disponibile.")
+            }
+        }
+    }
+
+    private fun setTorch(on: Boolean?): Outcome {
+        val camera = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val id = camera.cameraIdList.firstOrNull {
+            camera.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+        } ?: return fail("Flash non disponibile.")
+        val target = on ?: !torchEnabled
+        return try {
+            camera.setTorchMode(id, target); torchEnabled = target
+            ok(if (target) "Torcia accesa." else "Torcia spenta.")
+        } catch (e: Exception) { fail("Torcia: ${e.message}") }
+    }
+
+    private fun setVolume(level: Int?, dir: String): Outcome {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (level != null) {
+            val l = level.coerceIn(0, 100)
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, (max * l / 100f).roundToInt(), AudioManager.FLAG_SHOW_UI)
+            return ok(if (l == 0) "Audio silenziato." else "Volume al $l%.")
+        }
+        val down = dir == "down"
+        repeat(2) { i ->
+            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, if (down) AudioManager.ADJUST_LOWER else AudioManager.ADJUST_RAISE,
+                if (i == 0) AudioManager.FLAG_SHOW_UI else 0)
+        }
+        return ok(if (down) "Volume abbassato." else "Volume alzato.")
+    }
+
+    // ───────────── Modelli locali ─────────────
+    private fun modelsDir(): File = (getExternalFilesDir("models") ?: File(filesDir, "models")).apply { mkdirs() }
+
+    private fun activateModel(f: File, label: String) {
+        brain.modelFile = f
+        activeModelPath = f.absolutePath
+        prefs.edit().putString("model_path", f.absolutePath).apply()
+        modelLoaded = brain.available()
+        modelsVersion++
+        sys("$label pronto: è il motore offline di riserva.")
+    }
+
+    private fun deleteModel(m: LocalModel) {
+        val f = File(modelsDir(), m.file)
+        if (activeModelPath == f.absolutePath) {
+            brain.modelFile = null; activeModelPath = ""
+            prefs.edit().remove("model_path").apply()
+        }
+        f.delete()
+        modelLoaded = brain.available()
+        modelsVersion++
+        sys("${m.name} eliminato.")
+    }
+
+    /** Segue i redirect di Hugging Face con il token, così DownloadManager riceve l'URL finale firmato. */
+    private fun resolveDownloadUrl(start: String, token: String): String {
+        var url = start
+        repeat(6) {
+            val u = URL(url)
+            val conn = (u.openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                requestMethod = "HEAD"
+                connectTimeout = 15000; readTimeout = 15000
+                if (token.isNotBlank() && u.host.endsWith("huggingface.co")) setRequestProperty("Authorization", "Bearer $token")
+            }
+            try {
+                val code = conn.responseCode
+                when {
+                    code in 300..399 -> {
+                        val loc = conn.getHeaderField("Location") ?: return url
+                        url = URL(u, loc).toString()
+                    }
+                    code == 401 || code == 403 -> throw IllegalStateException(
+                        "Accesso negato (HTTP $code): accetta la licenza del modello su huggingface.co e verifica il token.")
+                    code == 404 -> throw IllegalStateException("Modello non trovato (HTTP 404).")
+                    else -> return url
+                }
+            } finally { conn.disconnect() }
+        }
+        return url
+    }
+
+    private fun startDownload(m: LocalModel) {
+        if (downloads.containsKey(m.id)) return
+        val dir = modelsDir()
+        if (StatFs(dir.path).availableBytes < m.bytes + 300_000_000L) { err("Spazio insufficiente per ${m.name} (${m.size})."); return }
+        if (m.needsToken && hfToken.isBlank()) {
+            err("${m.name} richiede un token Hugging Face e l'accettazione della licenza Gemma sul sito.")
+            return
+        }
+        downloads[m.id] = -1f
+        scope.launch {
+            try {
+                val token = if (m.needsToken) hfToken else ""
+                val finalUrl = withContext(Dispatchers.IO) { resolveDownloadUrl(m.url, token) }
+                File(dir, m.file).delete()
+                val req = DownloadManager.Request(Uri.parse(finalUrl))
+                    .setTitle("JARVIS • ${m.name}")
+                    .setDescription("Modello AI locale (${m.size})")
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setDestinationInExternalFilesDir(this@MainActivity, "models", m.file)
+                    .setAllowedOverMetered(true)
+                    .setAllowedOverRoaming(false)
+                if (token.isNotBlank() && Uri.parse(finalUrl).host?.endsWith("huggingface.co") == true)
+                    req.addRequestHeader("Authorization", "Bearer $token")
+                val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+                val id = dm.enqueue(req)
+                prefs.edit().putLong("dl_${m.id}", id).apply()
+                sys("Download di ${m.name} avviato (${m.size}). Puoi chiudere l'app: continua in background.")
+                pollDownload(m, id)
+            } catch (e: Exception) {
+                downloads.remove(m.id)
+                err(e.message ?: "Download fallito.")
+            }
+        }
+    }
+
+    private fun cancelDownload(m: LocalModel) {
+        val id = prefs.getLong("dl_${m.id}", -1L)
+        if (id >= 0) (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).remove(id)
+        prefs.edit().remove("dl_${m.id}").apply()
+        downloads.remove(m.id)
+        File(modelsDir(), m.file).delete()
+        modelsVersion++
+    }
+
+    private suspend fun pollDownload(m: LocalModel, id: Long) {
+        val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+        while (true) {
+            val st = withContext(Dispatchers.IO) {
+                try {
+                    dm.query(DownloadManager.Query().setFilterById(id))?.use { c ->
+                        if (!c.moveToFirst()) null else DlState(
+                            c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)),
+                            c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)),
+                            c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)),
+                            c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)))
+                    }
+                } catch (e: Exception) { null }
+            }
+            if (!downloads.containsKey(m.id)) return
+            if (st == null) {
+                downloads.remove(m.id); prefs.edit().remove("dl_${m.id}").apply()
+                err("Download di ${m.name} interrotto."); return
+            }
+            when (st.status) {
+                DownloadManager.STATUS_SUCCESSFUL -> {
+                    downloads.remove(m.id); prefs.edit().remove("dl_${m.id}").apply()
+                    activateModel(File(modelsDir(), m.file), m.name)
+                    return
+                }
+                DownloadManager.STATUS_FAILED -> {
+                    downloads.remove(m.id); prefs.edit().remove("dl_${m.id}").apply()
+                    File(modelsDir(), m.file).delete(); modelsVersion++
+                    err(if (st.reason == 401 || st.reason == 403) "Accesso negato a ${m.name}: accetta la licenza su Hugging Face e controlla il token."
+                        else "Download di ${m.name} fallito (codice ${st.reason}).")
+                    return
+                }
+                else -> downloads[m.id] = if (st.total > 0) st.done.toFloat() / st.total else -1f
+            }
+            delay(1000)
         }
     }
 
@@ -493,8 +975,22 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     Text(if (modelLoaded) "● LOCALE" else "○ LOCALE", color = if (modelLoaded) Green else Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
             }
+            val haptic = LocalHapticFeedback.current
+            val ripple = remember { Animatable(0f) }
+            val uiScope = rememberCoroutineScope()
             Box(Modifier.fillMaxWidth().height(300.dp)) {
-                HudCore(Modifier.fillMaxSize().padding(horizontal = 30.dp), isBusy, listening)
+                HudCore(Modifier.fillMaxSize().padding(horizontal = 30.dp).pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            uiScope.launch { ripple.snapTo(0f); ripple.animateTo(1f, tween(900)) }
+                            listen()
+                        },
+                        onLongPress = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            screen = Screen.CHAT
+                        })
+                }, isBusy, listening, ripple.value)
                 val mono = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 9.sp, color = Muted, lineHeight = 13.sp)
                 Column(Modifier.align(Alignment.TopStart)) {
                     Text(Build.MODEL, style = mono, color = Color.White)
@@ -508,7 +1004,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     Text("TEMP %.0f°C".format(Locale.ITALIAN, stats.temp), style = mono)
                     Text(if (stats.online) "NET  OK" else "NET  --", style = mono)
                 }
-                Text(if (isBusy) "ELABORAZIONE…" else if (listening) "ASCOLTO…" else "MOTORE: $engineStatus",
+                Text(if (isBusy) "ELABORAZIONE…" else if (listening) "ASCOLTO…" else "TOCCA IL NUCLEO PER PARLARE",
                     Modifier.align(Alignment.BottomCenter), color = accent, fontSize = 10.sp, letterSpacing = 2.sp)
             }
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -543,7 +1039,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         LaunchedEffect(messages.size, isBusy) { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size) }
         Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
             Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                HexLogo(34.dp)
+                Box(Modifier.clip(CircleShape).clickable { listen() }) { HexLogo(34.dp) }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text("J.A.R.V.I.S.", color = Color.White, fontWeight = FontWeight.Black, fontSize = 18.sp, letterSpacing = 2.sp)
@@ -561,7 +1057,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             LazyRow(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val sugg = listOf("Briefing" to Icons.Rounded.WbSunny, "Che ore sono?" to Icons.Rounded.Schedule,
                     "Batteria" to Icons.Rounded.BatteryChargingFull, "Mostra note" to Icons.Rounded.Description,
-                    "Mostra attività" to Icons.Rounded.TaskAlt)
+                    "Mostra attività" to Icons.Rounded.TaskAlt, "Apri WhatsApp" to Icons.Rounded.Sms,
+                    "Timer 5 minuti" to Icons.Rounded.Timer, "Accendi la torcia" to Icons.Rounded.FlashlightOn)
                 items(sugg) { (t, ic) -> Chip(t, ic, accent2) { send(t) } }
             }
             if (listening) Waveform(Modifier.fillMaxWidth().height(40.dp).padding(bottom = 6.dp))
@@ -607,11 +1104,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             NeonCard(Modifier.fillMaxWidth(), accent2) {
                 Text("COMANDI RAPIDI", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
                 Spacer(Modifier.height(6.dp))
-                listOf("ricorda <testo>" to "salva una nota", "attività <testo>" to "aggiunge un'attività",
-                    "cerca web <testo>" to "ricerca Google", "naviga <luogo>" to "apre le mappe",
-                    "briefing" to "riepilogo vocale", "torcia" to "accende/spegne il flash").forEach { (c, d) ->
+                listOf("apri <app>" to "qualsiasi app o impostazione", "chiama <nome>" to "chiamata dalla rubrica",
+                    "scrivi su whatsapp a <nome>: <testo>" to "messaggio pronto", "svegliami alle 7 e mezza" to "imposta sveglia",
+                    "timer 10 minuti" to "conto alla rovescia", "naviga verso <luogo>" to "navigatore",
+                    "metti <brano>" to "musica", "volume al 50" to "audio", "accendi la torcia" to "flash",
+                    "attiva il wifi" to "pannello rapido", "ricorda <testo>" to "salva una nota").forEach { (c, d) ->
                     Row(Modifier.padding(vertical = 3.dp)) {
-                        Text(c, color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 12.sp, modifier = Modifier.width(150.dp))
+                        Text(c, color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 12.sp, modifier = Modifier.width(170.dp))
                         Text(d, color = Muted, fontSize = 12.sp)
                     }
                 }
@@ -816,22 +1315,20 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
             NeonCard(Modifier.fillMaxWidth(), accent2) {
                 Text("AI CORE — GEMINI + LOCALE", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
-                Text("La chat usa Gemini quando c'è rete; senza connessione passa al modello locale.", color = Muted, fontSize = 11.sp)
+                Text("Ogni richiesta va prima a Gemini; se non risponde passa al modello locale. I comandi diretti (apri, chiama, sveglia…) sono istantanei.", color = Muted, fontSize = 11.sp)
                 OutlinedTextField(apiKey, {
                     apiKey = it.trim(); prefs.edit().putString("gemini_api_key", apiKey).apply()
                 }, Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation(),
                     label = { Text("API key Gemini") }, colors = fieldColors())
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Preferisci Gemini online", Modifier.weight(1f), color = Color.White, fontSize = 13.sp)
+                    Text("Priorità a Gemini online", Modifier.weight(1f), color = Color.White, fontSize = 13.sp)
                     Switch(onlineEnabled, { onlineEnabled = it; prefs.edit().putBoolean("gemini_enabled", it).apply() },
                         colors = SwitchDefaults.colors(checkedTrackColor = accent2))
-                }
-                OutlinedButton(onClick = { quickAction("Importa modello") }, Modifier.fillMaxWidth(), enabled = !isBusy) {
-                    Text(if (modelLoaded) "SOSTITUISCI MODELLO LOCALE" else "IMPORTA MODELLO LOCALE .BIN", color = accent2)
                 }
                 Text("La chiave resta sul telefono (non cifrata). I messaggi inviati a Gemini lasciano il dispositivo: niente dati sensibili.",
                     color = Muted, fontSize = 10.sp)
             }
+            ModelsCard()
             NeonCard(Modifier.fillMaxWidth(), Stroke1) {
                 Text("INTERFACCIA", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -847,6 +1344,61 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             Text("J.A.R.V.I.S. NEXUS 3.0 • Kotlin + Jetpack Compose", color = Muted, fontSize = 10.sp,
                 textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
+        }
+    }
+
+    @Composable
+    private fun ModelsCard() {
+        val version = modelsVersion
+        NeonCard(Modifier.fillMaxWidth(), accent) {
+            Text("MODELLO LOCALE (OFFLINE)", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+            Text("Entra in gioco quando Gemini non è raggiungibile. Meglio scaricare su Wi-Fi.", color = Muted, fontSize = 11.sp)
+            localModels.forEach { m -> ModelRow(m, version) }
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(hfToken, { hfToken = it.trim(); prefs.edit().putString("hf_token", hfToken).apply() },
+                Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation(),
+                label = { Text("Token Hugging Face (solo Gemma)") }, colors = fieldColors())
+            Text("Per Gemma: accedi a huggingface.co, apri la pagina del modello e accetta la licenza, poi crea un token di lettura in Settings → Access Tokens.",
+                color = Muted, fontSize = 10.sp)
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(onClick = { quickAction("Importa modello") }, Modifier.fillMaxWidth(), enabled = !isBusy) {
+                Text("IMPORTA DA FILE (.task / .bin)", color = accent2, fontSize = 12.sp)
+            }
+        }
+    }
+
+    @Composable
+    private fun ModelRow(m: LocalModel, version: Int) {
+        val f = File(modelsDir(), m.file)
+        val dl = downloads[m.id]
+        val downloaded = version >= 0 && dl == null && f.exists() && f.length() > 0
+        val active = downloaded && activeModelPath == f.absolutePath
+        Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(m.name, color = if (active) Green else Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(if (active) "IN USO • ${m.size}" else "${m.size} • ${m.desc}", color = if (active) Green else Muted, fontSize = 11.sp)
+                }
+                when {
+                    dl != null -> TextButton(onClick = { cancelDownload(m) }) { Text("ANNULLA", color = accent, fontSize = 12.sp) }
+                    active -> TextButton(onClick = { deleteModel(m) }) { Text("ELIMINA", color = Muted, fontSize = 12.sp) }
+                    downloaded -> Row {
+                        TextButton(onClick = { activateModel(f, m.name) }) { Text("USA", color = accent2, fontSize = 12.sp) }
+                        TextButton(onClick = { deleteModel(m) }) { Text("ELIMINA", color = Muted, fontSize = 12.sp) }
+                    }
+                    else -> Button(onClick = { startDownload(m) }, colors = ButtonDefaults.buttonColors(containerColor = accent2),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)) { Text("SCARICA", fontSize = 12.sp) }
+                }
+            }
+            if (dl != null) {
+                Spacer(Modifier.height(6.dp))
+                Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(Stroke1)) {
+                    if (dl >= 0f) Box(Modifier.fillMaxWidth(dl.coerceIn(0f, 1f)).fillMaxHeight()
+                        .background(Brush.horizontalGradient(listOf(accent2, Cyan))))
+                }
+                Text(if (dl < 0f) "Connessione…" else "${(dl * 100).toInt()}%", color = Muted, fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 2.dp))
+            }
         }
     }
 
@@ -1032,7 +1584,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     @Composable
-    private fun HudCore(modifier: Modifier, busy: Boolean, listen: Boolean) {
+    private fun HudCore(modifier: Modifier, busy: Boolean, listen: Boolean, ripple: Float = 0f) {
         val red = accent; val blue = accent2
         val inf = rememberInfiniteTransition(label = "hud")
         val spin by inf.animateFloat(0f, 360f, infiniteRepeatable(tween(if (busy) 4000 else 16000, easing = LinearEasing)), label = "spin")
@@ -1077,6 +1629,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             val inner = Path().apply { moveTo(c.x - s * .48f, c.y - s * .28f); lineTo(c.x + s * .48f, c.y - s * .28f); lineTo(c.x, c.y + s * .45f); close() }
             drawPath(inner, Color(0xFF061024))
             drawPath(tri, Color.White.copy(alpha = .75f), style = Stroke(2f))
+            if (ripple > 0f && ripple < 1f) {
+                drawCircle(blue.copy(alpha = (1f - ripple) * .9f), r * (.48f + ripple * .62f), c, style = Stroke(2f + 6f * (1f - ripple)))
+                drawCircle(red.copy(alpha = (1f - ripple) * .5f), r * (.48f + ripple * .45f), c, style = Stroke(2f))
+            }
         }
     }
 }
