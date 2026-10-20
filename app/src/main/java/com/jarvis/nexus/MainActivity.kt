@@ -17,7 +17,6 @@ import android.os.Environment
 import android.os.StatFs
 import android.app.ActivityManager
 import android.hardware.camera2.CameraManager
-import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.BatteryManager
 import android.os.Bundle
@@ -107,8 +106,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     }
                 }
                 modelLoaded = brain.available()
-        apiKey = prefs.getString("gemini_api_key", "") ?: ""
-        onlineEnabled = prefs.getBoolean("gemini_enabled", true)
                 messages.add(Line("SYSTEM", "Modello importato. L'inferenza dipende dalla compatibilità del file."))
             } catch (e: Exception) {
                 messages.add(Line("ERROR", "Importazione fallita: ${e.message}"))
@@ -132,6 +129,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         super.onCreate(savedInstanceState)
         brain = LocalBrain(this)
         modelLoaded = brain.available()
+        apiKey = prefs.getString("gemini_api_key", "") ?: ""
+        onlineEnabled = prefs.getBoolean("gemini_enabled", true)
         tts = TextToSpeech(this, this)
         setContent { NexusScreen() }
     }

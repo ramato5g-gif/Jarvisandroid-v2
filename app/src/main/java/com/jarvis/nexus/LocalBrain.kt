@@ -23,8 +23,8 @@ class LocalBrain(private val context: Context) {
         }
         return llm!!.generateResponse(
             "Sei JARVIS, assistente Android privato. Rispondi in italiano. " +
-            "Non dichiarare di aver eseguito azioni se non è vero.\\n" +
-            memory.takeLast(2400) + "\\nUtente: " + question + "\\nJARVIS:"
+            "Non dichiarare di aver eseguito azioni se non è vero.\n" +
+            memory.takeLast(2400) + "\nUtente: " + question + "\nJARVIS:"
         ).trim()
     }
     @Synchronized fun unload() { llm?.close(); llm = null }
