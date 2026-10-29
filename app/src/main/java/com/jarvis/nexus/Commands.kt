@@ -11,7 +11,7 @@ data class Cmd(val type: String, val args: Map<String, String> = emptyMap()) {
 
 data class Outcome(val ok: Boolean, val msg: String)
 
-/** Riconoscimento comandi vocali in italiano + parsing delle azioni proposte da Gemini. */
+/** Riconoscimento comandi vocali in italiano + parsing delle azioni proposte da Claude. */
 object Commands {
     private val IC = RegexOption.IGNORE_CASE
     private val wake = Regex("^\\s*(?:(?:ehi|hey|ok|ciao)\\s+)?jarvis[\\s,!.:]*", IC)
@@ -141,8 +141,8 @@ object Commands {
         return null
     }
 
-    /** Estrae la riga "AZIONE: {json}" dalla risposta di Gemini. */
-    fun fromGemini(reply: String): Pair<Cmd?, String> {
+    /** Estrae la riga "AZIONE: {json}" dalla risposta di Claude. */
+    fun fromClaude(reply: String): Pair<Cmd?, String> {
         val lines = reply.replace("```json", "").replace("```", "").lines()
         val idx = lines.indexOfFirst { it.trim().startsWith("AZIONE", ignoreCase = true) }
         val text = lines.filterIndexed { i, _ -> i != idx }.joinToString("\n").replace("*", "").trim()

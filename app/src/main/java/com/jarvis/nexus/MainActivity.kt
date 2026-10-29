@@ -130,7 +130,7 @@ private data class DevStats(
 )
 
 private val modules = listOf(
-    Module("AI CORE", "Modello locale", Icons.Rounded.Psychology, listOf("Modelli locali", "Gemini", "Cancella chat")),
+    Module("AI CORE", "Modello locale", Icons.Rounded.Psychology, listOf("Modelli locali", "Claude", "Cancella chat")),
     Module("VOICE", "STT / TTS", Icons.Rounded.GraphicEq, listOf("Voce", "Test voce")),
     Module("MEMORY", "Note e attività", Icons.Rounded.Storage),
     Module("REPORT", "Report mensili PC", Icons.Rounded.Assessment),
@@ -172,7 +172,7 @@ private fun actionIcon(a: String): ImageVector = when (a) {
     "Test voce" -> Icons.Rounded.RecordVoiceOver
     "Importa modello" -> Icons.Rounded.Download
     "Modelli locali" -> Icons.Rounded.CloudDownload
-    "Gemini" -> Icons.Rounded.VpnKey
+    "Claude" -> Icons.Rounded.VpnKey
     "Cancella chat" -> Icons.Rounded.DeleteSweep
     "Stato" -> Icons.Rounded.Speed
     "Batteria" -> Icons.Rounded.BatteryChargingFull
@@ -303,8 +303,8 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (activeModelPath.isEmpty() && File(filesDir, "model.bin").exists()) activeModelPath = File(filesDir, "model.bin").absolutePath
         if (activeModelPath.isNotEmpty()) brain.modelFile = File(activeModelPath)
         modelLoaded = brain.available()
-        apiKey = prefs.getString("gemini_api_key", "") ?: ""
-        onlineEnabled = prefs.getBoolean("gemini_enabled", true)
+        apiKey = prefs.getString("claude_api_key", "") ?: ""
+        onlineEnabled = prefs.getBoolean("claude_enabled", true)
         userName = prefs.getString("user_name", "Riccardo") ?: "Riccardo"
         altTheme = prefs.getBoolean("alt_theme", false)
         notes.addAll(parseList(prefs.getString("notes", "") ?: "", "• "))
@@ -481,7 +481,7 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             "Voce" -> listen()
             "Test voce" -> speak("Sistemi online. Tutti i moduli sono operativi, $userName.")
             "Importa modello" -> modelPicker.launch(arrayOf("application/octet-stream", "*/*"))
-            "Gemini", "Modelli locali" -> screen = Screen.SETTINGS
+            "Claude", "Modelli locali" -> screen = Screen.SETTINGS
             "Cancella chat" -> { messages.clear(); messages.add(Line("JARVIS", "Conversazione cancellata.")) }
             "Esporta note" -> exportFile.launch("jarvis-note.txt")
             "Importa note" -> importText.launch(arrayOf("text/plain", "*/*"))
@@ -558,8 +558,8 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun buildTurns(): List<Pair<String, String>> {
         val out = mutableListOf<Pair<String, String>>()
         messages.filter { it.who == "TU" || it.who == "JARVIS" }.takeLast(14).forEach { m ->
-            val role = if (m.who == "TU") "user" else "model"
-            if (out.isEmpty() && role == "model") return@forEach
+            val role = if (m.who == "TU") "user" else "assistant"
+            if (out.isEmpty() && role == "assistant") return@forEach
             if (out.isNotEmpty() && out.last().first == role) out[out.lastIndex] = role to (out.last().second + "\n" + m.message)
             else out.add(role to m.message)
         }
@@ -618,20 +618,20 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                 var out: String? = null
                 if (useCloud) {
                     try {
-                        val parsed = Commands.fromGemini(GeminiClient.chat(key, system, turns))
-                        cmd = parsed.first; out = parsed.second; engine = "GEMINI"
+                        val parsed = Commands.fromClaude(ClaudeClient.chat(key, system, turns))
+                        cmd = parsed.first; out = parsed.second; engine = "HAIKU"
                     } catch (e: Exception) { cloudError = e.message }
                 }
                 out ?: if (brain.available()) {
                     try { brain.respond(q, ctx) } catch (e: Exception) { "Motore locale non disponibile: ${e.message}" }
-                } else if (!useCloud) "Configura la API key di Gemini nella sezione Sistema, oppure importa un modello locale."
-                else "Gemini non è raggiungibile e non c'è un modello locale di riserva."
+                } else if (!useCloud) "Configura la API key di Claude nella sezione Sistema, oppure importa un modello locale."
+                else "Claude Haiku non è raggiungibile e non c'è un modello locale di riserva."
             }
-            cloudError?.let { sys("Gemini non disponibile: $it") }
+            cloudError?.let { sys("Claude Haiku non disponibile: $it") }
             val c = cmd
             if (c != null) {
                 val r = execute(c)
-                reply(if (!r.ok || text.isBlank()) r.msg else text, "GEMINI")
+                reply(if (!r.ok || text.isBlank()) r.msg else text, "HAIKU")
             } else reply(text.ifBlank { "Fatto." }, engine)
             isBusy = false
         }
@@ -1277,7 +1277,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                         Text(m.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                         Text(m.sub, color = Muted, fontSize = 12.sp)
                         if (m.id == "AI CORE") Text(
-                            (if (apiKey.isNotBlank()) "Gemini configurato" else "Gemini non configurato") + " • " +
+                            (if (apiKey.isNotBlank()) "Claude Haiku configurato" else "Claude Haiku non configurato") + " • " +
                                 (if (modelLoaded) "modello locale pronto" else "nessun modello locale"),
                             color = accent2, fontSize = 11.sp)
                     }
@@ -1458,18 +1458,18 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                 }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Come ti chiamo") }, colors = fieldColors())
             }
             NeonCard(Modifier.fillMaxWidth(), accent2) {
-                Text("AI CORE — GEMINI + LOCALE", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
-                Text("Ogni richiesta va prima a Gemini; se non risponde passa al modello locale. I comandi diretti (apri, chiama, sveglia…) sono istantanei.", color = Muted, fontSize = 11.sp)
+                Text("AI CORE — CLAUDE HAIKU + LOCALE", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+                Text("Ogni richiesta va prima a Claude Haiku; se non risponde passa al modello locale. I comandi diretti (apri, chiama, sveglia…) sono istantanei.", color = Muted, fontSize = 11.sp)
                 OutlinedTextField(apiKey, {
-                    apiKey = it.trim(); prefs.edit().putString("gemini_api_key", apiKey).apply()
+                    apiKey = it.trim(); prefs.edit().putString("claude_api_key", apiKey).apply()
                 }, Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation(),
-                    label = { Text("API key Gemini") }, colors = fieldColors())
+                    label = { Text("API key Anthropic") }, colors = fieldColors())
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Priorità a Gemini online", Modifier.weight(1f), color = Color.White, fontSize = 13.sp)
-                    Switch(onlineEnabled, { onlineEnabled = it; prefs.edit().putBoolean("gemini_enabled", it).apply() },
+                    Text("Priorità a Claude Haiku online", Modifier.weight(1f), color = Color.White, fontSize = 13.sp)
+                    Switch(onlineEnabled, { onlineEnabled = it; prefs.edit().putBoolean("claude_enabled", it).apply() },
                         colors = SwitchDefaults.colors(checkedTrackColor = accent2))
                 }
-                Text("La chiave resta sul telefono (non cifrata). I messaggi inviati a Gemini lasciano il dispositivo: niente dati sensibili.",
+                Text("La chiave resta sul telefono (non cifrata). I messaggi inviati a Claude lasciano il dispositivo: niente dati sensibili.",
                     color = Muted, fontSize = 10.sp)
             }
             QuickAccessCard()
@@ -1588,7 +1588,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
         val version = modelsVersion
         NeonCard(Modifier.fillMaxWidth(), accent) {
             Text("MODELLO LOCALE (OFFLINE)", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
-            Text("Entra in gioco quando Gemini non è raggiungibile. Meglio scaricare su Wi-Fi.", color = Muted, fontSize = 11.sp)
+            Text("Entra in gioco quando Claude Haiku non è raggiungibile. Meglio scaricare su Wi-Fi.", color = Muted, fontSize = 11.sp)
             localModels.forEach { m -> ModelRow(m, version) }
             Spacer(Modifier.height(6.dp))
             OutlinedTextField(hfToken, { hfToken = it.trim(); prefs.edit().putString("hf_token", hfToken).apply() },

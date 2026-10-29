@@ -71,11 +71,11 @@ L'APK prodotto è debug; per distribuzione occorre una firma release.
 Se la build fallisce, consulta i log GitHub Actions: la compatibilità delle dipendenze
 e dei dispositivi richiede una verifica effettiva.
 
-## Gemini primario + AI locale di riserva
-- Nel pannello **GEMINI CLOUD + FALLBACK LOCALE** inserisci la tua API key creata su Google AI Studio. La chiave non è nel codice o nel repository.
-- Il client usa `gemini-2.5-flash` tramite HTTPS e `generateContent`; connessione necessaria, limiti e costi dipendono dal tuo account Google.
-- Con Gemini disabilitato, rete non disponibile o richiesta cloud fallita, prova MediaPipe locale.
+## Claude Haiku primario + AI locale di riserva
+- Nella sezione **AI CORE — CLAUDE HAIKU + LOCALE** inserisci la tua API key creata su console.anthropic.com. La chiave non è nel codice o nel repository.
+- Il client usa `claude-haiku-5-5` tramite HTTPS e la Messages API (`/v1/messages`); connessione necessaria, limiti e costi dipendono dal tuo account Anthropic.
+- Con Claude disabilitato, rete non disponibile o richiesta cloud fallita, prova MediaPipe locale.
 - Per Galaxy S25 Ultra (12 GB RAM) partire da un modello piccolo, circa **1B–2B parametri** ottimizzato per Android. **Non basta un qualsiasi GGUF:** il codice MediaPipe richiede un modello `.bin` compatibile con la versione dell'SDK; verificare disponibilità e supporto prima del download. Una scelta da valutare è una variante MediaPipe di Gemma 2 2B, se compatibile con l'SDK installato.
 - Il modello non è incluso nell'APK e va importato dall'interfaccia. Il fallback funziona solo dopo importazione e test.
-- **Privacy:** Gemini invia i messaggi a Google. La API key è nelle SharedPreferences private, non cifrata a livello applicativo; per produzione si consiglia backend con autenticazione e limiti di utilizzo. Non includere chiavi in GitHub, screenshot o ZIP.
+- **Privacy:** Claude invia i messaggi ad Anthropic. La API key è nelle SharedPreferences private, non cifrata a livello applicativo; per produzione si consiglia backend con autenticazione e limiti di utilizzo. Non includere chiavi in GitHub, screenshot o ZIP.
 - Progetto non compilato/testato su dispositivo.
