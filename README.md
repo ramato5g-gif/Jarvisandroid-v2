@@ -1,4 +1,45 @@
-# J.A.R.V.I.S. NEXUS — Android (Samsung Galaxy S25 Ultra)
+# J.A.R.V.I.S. NEXUS — Android v3.1 (report mensili dal PC)
+
+Versione 3.1: tutto quello che c'era nella v3.0 **più** il modulo **REPORT**, che tiene sul telefono
+una copia aggiornata dei report mensili Sapio (registro + Excel Allegato D) di JARVIS desktop.
+
+## Report mensili: come funziona
+- **Sola lettura.** Il telefono fa solo richieste `GET` al PC e salva copie nella cartella privata dell'app.
+  Non invia dati, non modifica e non cancella nulla sul PC. Anche lato PC il servizio accetta solo `GET`
+  e non scrive mai registro o Excel.
+- **Solo Wi-Fi di casa.** Niente cloud: i dati dei pazienti viaggiano solo nella rete locale, cifrati (HTTPS).
+  Il PC accetta solo indirizzi di rete locale; il telefono accetta solo il certificato del PC con l'impronta letta dal QR.
+- **Automatico.** Si aggiorna all'apertura dell'app e ogni ora quando il telefono è su Wi-Fi (WorkManager).
+  Scarica solo i mesi cambiati. Una copia viene sostituita solo dopo un download completo e valido;
+  i mesi che spariscono dal PC restano sul telefono.
+- **In chat:** "report di ottobre", "report del mese" → riepilogo dalla copia locale.
+
+### Abbinamento (una volta sola)
+1. Aggiorna JARVIS desktop (serve `electron/services/report-share.js`, versione del 2026-10-29) e riavvialo.
+2. Sul PC scrivi o di' a JARVIS: **"abbina telefono report"** → si apre un QR.
+3. Sul telefono: MODULI → **REPORT** → **ABBINA** e inquadra il QR (scanner Google, nessun permesso fotocamera).
+   In alternativa incolla il link `jarvisreport://…`.
+4. Per revocare l'accesso: sul PC **"nuovo codice report"** (il vecchio telefono non accede più), sul telefono **SCOLLEGA**.
+
+Sul PC: `REPORT_SHARE=off` nel `.env` disattiva il servizio; `REPORT_PORT` (predefinita 8767) cambia la porta.
+La prima volta Windows può chiedere di consentire JARVIS sulle reti private: va consentito, solo "Private".
+
+### Limiti
+- Funziona solo quando PC e telefono sono sulla stessa rete e JARVIS desktop è acceso; altrimenti restano le ultime copie.
+- Se il PC rigenera il certificato (ogni ~2 anni) bisogna riabbinare.
+- Le copie sul telefono non sono cifrate a livello applicativo (sono nella memoria privata dell'app); tieni il telefono con blocco schermo.
+- Progetto non compilato in locale (manca l'SDK Android su questo PC): la build avviene su GitHub Actions.
+
+## Pubblicare su GitHub (repository nuovo)
+1. Crea un repository vuoto (es. `Jarvisandroid-v3`) e carica il contenuto di questa cartella.
+2. **Firma:** per installare la 3.1 *sopra* la versione già sul telefono senza perdere note e modelli,
+   copia nel nuovo repository gli stessi secret del vecchio (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`).
+   Senza gli stessi secret l'APK ha una firma diversa: Android rifiuta l'aggiornamento e bisogna disinstallare la vecchia app.
+3. Actions → *Build & Release JARVIS NEXUS APK* → scarica `JARVIS-NEXUS-v3.1.N.apk` dalla Release.
+   Il `versionCode` parte da 1001, quindi è sempre più alto di quello della v3.0.
+
+---
+
 
 Progetto Kotlin + Jetpack Compose con HUD 2D animato (anelli rotanti, pulsazione, radar tattico), moduli operativi e terminale.
 Il codice è una **base sperimentale**: non è stato compilato o testato su dispositivo in questo ambiente.

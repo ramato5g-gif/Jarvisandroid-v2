@@ -15,9 +15,9 @@ android {
         applicationId = "com.jarvis.nexus"
         minSdk = 28
         targetSdk = 35
-        // Cresce a ogni build su GitHub, così gli aggiornamenti si installano sopra la versione precedente
-        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
-        versionName = "3.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+        // Cresce a ogni build su GitHub; +1000 perché questo repository riparte da 1 ma deve installarsi sopra la v3.0
+        versionCode = 1000 + (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionName = "3.1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
     }
     signingConfigs {
         if (hasReleaseKey) {
@@ -59,4 +59,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("com.google.mediapipe:tasks-genai:0.10.24")
+    // Report mensili dal PC: sincronizzazione periodica e QR di abbinamento (scanner Google, senza permesso fotocamera)
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 }

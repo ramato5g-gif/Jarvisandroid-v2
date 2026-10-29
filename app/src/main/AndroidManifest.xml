@@ -53,6 +53,16 @@
             </intent-filter>
         </activity>
 
+        <!-- Copie locali dei report: condivise in sola lettura con l'app che apre l'Excel -->
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.reports"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/report_paths" />
+        </provider>
+        <!-- Scarica il modulo scanner QR di Google Play alla installazione -->
+        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="barcode_ui" />
+
         <service android:name=".JarvisTileService"
             android:exported="true"
             android:label="JARVIS"

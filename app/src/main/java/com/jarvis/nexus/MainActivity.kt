@@ -89,6 +89,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.core.content.FileProvider
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -113,7 +117,7 @@ private val Green = Color(0xFF3DDC97)
 private val Muted = Color(0xFF8593A8)
 
 private data class Line(val who: String, val message: String)
-private enum class Screen { HOME, CHAT, MODULES, MODULE, DEVICE, AUTOMATE, MEMORY, SETTINGS }
+private enum class Screen { HOME, CHAT, MODULES, MODULE, DEVICE, AUTOMATE, MEMORY, SETTINGS, REPORTS }
 private data class Module(val id: String, val sub: String, val icon: ImageVector, val actions: List<String> = emptyList()) {
     val title: String get() = id
 }
@@ -129,6 +133,7 @@ private val modules = listOf(
     Module("AI CORE", "Modello locale", Icons.Rounded.Psychology, listOf("Modelli locali", "Gemini", "Cancella chat")),
     Module("VOICE", "STT / TTS", Icons.Rounded.GraphicEq, listOf("Voce", "Test voce")),
     Module("MEMORY", "Note e attività", Icons.Rounded.Storage),
+    Module("REPORT", "Report mensili PC", Icons.Rounded.Assessment),
     Module("DEVICE", "Controllo Android", Icons.Rounded.PhoneAndroid),
     Module("AUTOMATE", "Routine e scenari", Icons.Rounded.Autorenew),
     Module("SYSTEM", "Diagnostica", Icons.Rounded.Speed, listOf("Stato", "Batteria", "Archiviazione", "App", "Impostazioni", "Cancella chat")),
@@ -235,6 +240,8 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var voiceTurn = false
     private var followUp = false
     private var resumeTick by mutableStateOf(0)
+    private var reportsVersion by mutableStateOf(0)
+    private var reportsBusy by mutableStateOf(false)
 
     private val accent: Color get() = if (altTheme) NeonBlue else NeonRed
     private val accent2: Color get() = if (altTheme) NeonRed else NeonBlue
@@ -321,6 +328,7 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             if (id >= 0) { downloads[m.id] = -1f; scope.launch { pollDownload(m, id) } }
         }
         if (assistMode) stats = try { readStats() } catch (e: Exception) { DevStats() }
+        if (!assistMode && ReportSync.pairing(this) != null) { ReportSyncWorker.schedule(this); syncReports(silent = true) }
         setContent { if (assistMode) AssistOverlay() else NexusApp() }
         if (assistMode) listen()
     }
@@ -453,6 +461,7 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun openModule(id: String) {
         when (id) {
             "MEMORY" -> screen = Screen.MEMORY
+            "REPORT" -> screen = Screen.REPORTS
             "DEVICE" -> screen = Screen.DEVICE
             "AUTOMATE" -> screen = Screen.AUTOMATE
             else -> { currentModule = id; screen = Screen.MODULE }
@@ -591,6 +600,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
         messages.add(Line("TU", q))
         val n = q.lowercase(Locale.ITALIAN)
         localAnswer(n)?.let { reply(it, "LOCALE"); return }
+        ReportSync.answer(this, n)?.let { reply(it, "REPORT"); return }
         Commands.parse(q)?.let { cmd -> reply(execute(cmd).msg, "COMANDO"); return }
 
         isBusy = true
@@ -1010,6 +1020,48 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
         }
     }
 
+    // ───────────── Report mensili dal PC (sola lettura) ─────────────
+    private fun syncReports(silent: Boolean = false) {
+        if (reportsBusy) return
+        reportsBusy = true
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { ReportSync.sync(applicationContext) }
+            reportsBusy = false; reportsVersion++
+            if (!silent || r.changed > 0) sys(r.msg)
+        }
+    }
+
+    private fun pairReports(raw: String) {
+        val p = ReportSync.parsePairing(raw)
+        if (p == null) { err("QR non valido: sul PC scrivi \"abbina telefono report\" e inquadra quel QR."); return }
+        ReportSync.savePairing(this, p)
+        ReportSyncWorker.schedule(this)
+        sys("Abbinato al PC ${p.host}. Scarico i report…")
+        syncReports()
+    }
+
+    private fun scanReportQr() {
+        val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+        GmsBarcodeScanning.getClient(this, opts).startScan()
+            .addOnSuccessListener { b -> pairReports(b.rawValue ?: "") }
+            .addOnFailureListener { e -> err("Scansione non riuscita: ${e.message}. Puoi incollare il link del QR.") }
+    }
+
+    private fun unpairReports() {
+        ReportSync.unpair(this); ReportSyncWorker.cancel(this); reportsVersion++
+        sys("Telefono scollegato dal PC. Le copie già scaricate restano consultabili.")
+    }
+
+    /** Apre la copia locale dell'Excel in sola lettura (all'altra app non viene dato permesso di scrittura). */
+    private fun openReportExcel(month: String) {
+        val f = ReportSync.excelFile(this, month)
+        if (!f.exists()) { err("Excel di ${ReportSync.monthLabel(month)} non ancora scaricato."); return }
+        val uri = FileProvider.getUriForFile(this, "$packageName.reports", f)
+        val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try { startActivity(Intent.createChooser(i, "Apri report")) } catch (e: Exception) { err("Nessuna app per aprire file Excel.") }
+    }
+
     // ═════════════════════════ UI ═════════════════════════
     @Composable
     private fun NexusApp() {
@@ -1020,7 +1072,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
             }
         }
         BackHandler(enabled = screen != Screen.HOME) {
-            screen = when (screen) { Screen.MODULE, Screen.MEMORY, Screen.AUTOMATE -> Screen.MODULES; else -> Screen.HOME }
+            screen = when (screen) { Screen.MODULE, Screen.MEMORY, Screen.AUTOMATE, Screen.REPORTS -> Screen.MODULES; else -> Screen.HOME }
         }
         MaterialTheme(colorScheme = darkColorScheme(primary = accent, secondary = accent2, background = Bg, surface = Panel, onSurface = Color.White)) {
             Column(Modifier.fillMaxSize().background(Bg).systemBarsPadding().imePadding()) {
@@ -1035,6 +1087,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                             Screen.AUTOMATE -> AutomationsScreen()
                             Screen.MEMORY -> MemoryScreen()
                             Screen.SETTINGS -> SettingsScreen()
+                            Screen.REPORTS -> ReportsScreen()
                         }
                     }
                 }
@@ -1605,6 +1658,82 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                     }
                 }
             }
+        }
+    }
+
+    // ───────────── REPORT ─────────────
+    @Composable
+    private fun ReportsScreen() {
+        val v = reportsVersion
+        val pairing = remember(v) { ReportSync.pairing(this@MainActivity) }
+        val months = remember(v) { ReportSync.localMonths(this@MainActivity) }
+        var open by remember { mutableStateOf<String?>(null) }
+        var link by remember { mutableStateOf("") }
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            ScreenHeader("REPORT MENSILI") { screen = Screen.MODULES }
+            NeonCard(Modifier.fillMaxWidth(), if (pairing != null) Green else accent) {
+                Text("SINCRONIZZAZIONE CON IL PC", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+                Spacer(Modifier.height(6.dp))
+                if (pairing == null) {
+                    Text("Non abbinato. Sul PC scrivi a JARVIS \"abbina telefono report\", poi tocca ABBINA e inquadra il QR.",
+                        color = Color.White, fontSize = 13.sp)
+                } else {
+                    Text("PC: ${pairing.host}:${pairing.port}", color = Color.White, fontSize = 13.sp)
+                    Text("Ultimo aggiornamento: ${ReportSync.lastSync(this@MainActivity) ?: "mai"}", color = Muted, fontSize = 12.sp)
+                    ReportSync.lastError(this@MainActivity)?.let { Text(it, color = accent, fontSize = 12.sp) }
+                }
+                Text("Sola lettura: il telefono scarica copie, non modifica nulla sul PC. Si aggiorna da solo sul Wi-Fi di casa.",
+                    color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = { scanReportQr() }, Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = accent2)) {
+                        Text(if (pairing == null) "ABBINA" else "RIABBINA", fontSize = 12.sp)
+                    }
+                    if (pairing != null) Button(onClick = { syncReports() }, Modifier.weight(1f), enabled = !reportsBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = accent)) {
+                        Text(if (reportsBusy) "AGGIORNO…" else "AGGIORNA ORA", fontSize = 12.sp)
+                    }
+                }
+                if (pairing == null) {
+                    OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true,
+                        placeholder = { Text("oppure incolla il link jarvisreport://…", color = Muted) }, colors = fieldColors())
+                    if (link.isNotBlank()) TextButton(onClick = { pairReports(link); link = "" }) { Text("USA LINK", color = accent2, fontSize = 12.sp) }
+                } else {
+                    TextButton(onClick = { unpairReports() }) { Text("SCOLLEGA", color = Muted, fontSize = 12.sp) }
+                }
+            }
+            if (months.isEmpty()) Text("Nessun report sul telefono.", color = Muted, fontSize = 12.sp)
+            months.forEach { m ->
+                NeonCard(Modifier.fillMaxWidth(), Stroke1, onClick = { open = if (open == m.month) null else m.month }) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Assessment, null, tint = accent2, modifier = Modifier.size(22.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(ReportSync.monthLabel(m.month), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text("${m.n} prestazioni" + (m.totale?.let { " • %.2f €".format(Locale.ITALIAN, it) } ?: ""),
+                                color = Muted, fontSize = 12.sp)
+                        }
+                        if (m.hasExcel) TextButton(onClick = { openReportExcel(m.month) }) { Text("EXCEL", color = accent2, fontSize = 12.sp) }
+                    }
+                    if (open == m.month) {
+                        val rows = remember(v, m.month) { ReportSync.rows(this@MainActivity, m.month) }
+                        if (rows.isEmpty()) Text("Dettaglio non disponibile.", color = Muted, fontSize = 12.sp)
+                        rows.forEach { r ->
+                            Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                                Text(r[0].takeLast(5), color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, modifier = Modifier.width(48.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(r[1], color = Color.White, fontSize = 13.sp)
+                                    Text(r[2], color = Muted, fontSize = 11.sp)
+                                }
+                                Text("${r[3]} €", color = Color.White, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+            LastLog()
+            Spacer(Modifier.height(10.dp))
         }
     }
 
