@@ -117,7 +117,7 @@ private val Green = Color(0xFF3DDC97)
 private val Muted = Color(0xFF8593A8)
 
 private data class Line(val who: String, val message: String)
-private enum class Screen { HOME, CHAT, MODULES, MODULE, DEVICE, AUTOMATE, MEMORY, SETTINGS, REPORTS }
+private enum class Screen { HOME, CHAT, MODULES, MODULE, DEVICE, AUTOMATE, MEMORY, SETTINGS, REPORTS, SOMNO }
 private data class Module(val id: String, val sub: String, val icon: ImageVector, val actions: List<String> = emptyList()) {
     val title: String get() = id
 }
@@ -140,6 +140,7 @@ private val modules = listOf(
     Module("WORK", "Produttività", Icons.Rounded.Work, listOf("Email", "Calendario", "File", "Condividi", "Esporta note", "Copia note")),
     Module("HEALTH", "Promemoria", Icons.Rounded.Favorite, listOf("Farmaco", "Acqua", "Timer", "Promemoria")),
     Module("NETWORK", "Rete e connessioni", Icons.Rounded.Wifi, listOf("Wi-Fi", "Bluetooth", "Dati mobili", "NFC", "Browser", "Mappe")),
+    Module("SOMNO", "Appuntamenti", Icons.Rounded.MedicalServices),
 )
 
 private data class LocalModel(
@@ -338,8 +339,13 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (assistMode && !listening) listen()
     }
     override fun onResume() { super.onResume(); resumeTick++ }
+    override fun onStart() {
+        super.onStart()
+        if (SomnoApts.isConfigured(this)) SomnoApts.startLive(this)
+    }
     override fun onStop() {
         super.onStop()
+        SomnoApts.stopLive()
         // La finestra rapida si chiude quando un'azione apre un'altra app
         if (assistMode && !isChangingConfigurations) finish()
     }
@@ -464,6 +470,7 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             "REPORT" -> screen = Screen.REPORTS
             "DEVICE" -> screen = Screen.DEVICE
             "AUTOMATE" -> screen = Screen.AUTOMATE
+            "SOMNO" -> screen = Screen.SOMNO
             else -> { currentModule = id; screen = Screen.MODULE }
         }
     }
@@ -601,6 +608,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
         val n = q.lowercase(Locale.ITALIAN)
         localAnswer(n)?.let { reply(it, "LOCALE"); return }
         ReportSync.answer(this, n)?.let { reply(it, "REPORT"); return }
+        SomnoApts.answer(this, n)?.let { reply(it, "SOMNO"); return }
         Commands.parse(q)?.let { cmd -> reply(execute(cmd).msg, "COMANDO"); return }
 
         isBusy = true
@@ -1072,7 +1080,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
             }
         }
         BackHandler(enabled = screen != Screen.HOME) {
-            screen = when (screen) { Screen.MODULE, Screen.MEMORY, Screen.AUTOMATE, Screen.REPORTS -> Screen.MODULES; else -> Screen.HOME }
+            screen = when (screen) { Screen.MODULE, Screen.MEMORY, Screen.AUTOMATE, Screen.REPORTS, Screen.SOMNO -> Screen.MODULES; else -> Screen.HOME }
         }
         MaterialTheme(colorScheme = darkColorScheme(primary = accent, secondary = accent2, background = Bg, surface = Panel, onSurface = Color.White)) {
             Column(Modifier.fillMaxSize().background(Bg).systemBarsPadding().imePadding()) {
@@ -1088,6 +1096,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                             Screen.MEMORY -> MemoryScreen()
                             Screen.SETTINGS -> SettingsScreen()
                             Screen.REPORTS -> ReportsScreen()
+                            Screen.SOMNO -> SomnoScreen()
                         }
                     }
                 }
@@ -1472,6 +1481,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                 Text("La chiave resta sul telefono (non cifrata). I messaggi inviati a Claude lasciano il dispositivo: niente dati sensibili.",
                     color = Muted, fontSize = 10.sp)
             }
+            SomnoDeskCard()
             QuickAccessCard()
             ModelsCard()
             NeonCard(Modifier.fillMaxWidth(), Stroke1) {
@@ -1490,6 +1500,244 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                 textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
         }
+    }
+
+    @Composable
+    private fun SomnoDeskCard() {
+        val c0 = remember { try { SomnoApts.config(this@MainActivity) } catch (e: Exception) { SomnoApts.Config("", "", "", "") } }
+        var url by remember { mutableStateOf(c0.dbUrl) }
+        var key by remember { mutableStateOf(c0.apiKey) }
+        var mail by remember { mutableStateOf(c0.email) }
+        var pass by remember { mutableStateOf(c0.password) }
+        var status by remember { mutableStateOf("") }
+        var testing by remember { mutableStateOf(false) }
+        fun cfg() = SomnoApts.Config(url.trim(), key.trim(), mail.trim(), pass)
+        fun save() { try { SomnoApts.saveConfig(this@MainActivity, cfg()) } catch (e: Exception) { status = "Errore salvataggio: ${e.message}" } }
+        NeonCard(Modifier.fillMaxWidth(), Stroke1) {
+            Text("SOMNODESK", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+            OutlinedTextField(url, { url = it }, Modifier.fillMaxWidth(), singleLine = true,
+                label = { Text("URL database (https)") }, colors = fieldColors())
+            OutlinedTextField(key, { key = it }, Modifier.fillMaxWidth(), singleLine = true,
+                label = { Text("API key") }, colors = fieldColors())
+            OutlinedTextField(mail, { mail = it }, Modifier.fillMaxWidth(), singleLine = true,
+                label = { Text("Email (opzionale)") }, colors = fieldColors())
+            OutlinedTextField(pass, { pass = it }, Modifier.fillMaxWidth(), singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                label = { Text("Password (opzionale)") }, colors = fieldColors())
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(onClick = { save(); restartLive(); status = "Salvato." }, Modifier.weight(1f)) {
+                    Text("SALVA", color = accent2, fontSize = 12.sp)
+                }
+                OutlinedButton(onClick = {
+                    if (testing) return@OutlinedButton
+                    save(); restartLive(); testing = true; status = "Connessione in corso…"
+                    Thread {
+                        val msg = try {
+                            val r = SomnoApts.readAll(this@MainActivity)
+                            if (r.ok) "Connesso: ${r.apts.size} appuntamenti" else r.msg
+                        } catch (e: Exception) { "Errore: ${e.message ?: "sconosciuto"}" }
+                        runOnUiThread { status = msg; testing = false }
+                    }.start()
+                }, Modifier.weight(1f)) { Text("PROVA CONNESSIONE", color = accent2, fontSize = 11.sp) }
+            }
+            if (status.isNotEmpty()) Text(status, color = Muted, fontSize = 11.sp)
+        }
+    }
+
+    private fun restartLive() {
+        try {
+            SomnoApts.stopLive()
+            if (SomnoApts.isConfigured(this)) SomnoApts.startLive(this)
+        } catch (e: Exception) { }
+    }
+
+    // ───────────── AGENDA SOMNO ─────────────
+    private fun dayCal(s: String): Calendar = Calendar.getInstance().apply {
+        try { time = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).parse(s) ?: Date() } catch (e: Exception) { time = Date() }
+    }
+    private fun dayStr(c: Calendar): String = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(c.time)
+
+    @Composable
+    private fun SomnoScreen() {
+        var day by remember { mutableStateOf(dayStr(Calendar.getInstance())) }
+        var editing by remember { mutableStateOf<SomnoApts.Apt?>(null) }
+        var creating by remember { mutableStateOf(false) }
+        val tick = resumeTick
+        val configured = tick >= 0 && SomnoApts.isConfigured(this)
+        val st = SomnoApts.status
+        val list = SomnoApts.liveApts.filter { it.date == day }.sortedBy { it.time }
+        Box(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ScreenHeader("AGENDA SOMNO") { screen = Screen.MODULES }
+                if (!configured) {
+                    NeonCard(Modifier.fillMaxWidth(), accent) {
+                        Text("SomnoDesk non configurato.", color = Color.White, fontSize = 13.sp)
+                        OutlinedButton(onClick = { screen = Screen.SETTINGS }) { Text("APRI IMPOSTAZIONI", color = accent2, fontSize = 12.sp) }
+                    }
+                } else {
+                    val (label, col) = when (st) {
+                        SomnoApts.Live.ONLINE -> "ONLINE" to Green
+                        SomnoApts.Live.ERROR -> "ERRORE" to NeonRed
+                        else -> "OFFLINE" + (if (SomnoApts.updatedAt > 0)
+                            " • ultimo agg. " + SimpleDateFormat("HH:mm", Locale.ITALIAN).format(Date(SomnoApts.updatedAt)) else "") to Muted
+                    }
+                    Text("● $label", color = col, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { day = dayStr(dayCal(day).apply { add(Calendar.DAY_OF_MONTH, -1) }) }) {
+                        Icon(Icons.Rounded.ChevronLeft, "Giorno precedente", tint = accent2)
+                    }
+                    TextButton(onClick = {
+                        val c = dayCal(day)
+                        android.app.DatePickerDialog(this@MainActivity, { _, y, m, d ->
+                            day = String.format(Locale.ROOT, "%04d-%02d-%02d", y, m + 1, d)
+                        }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)).show()
+                    }, Modifier.weight(1f)) {
+                        Text(SimpleDateFormat("EEE d MMM yyyy", Locale.ITALIAN).format(dayCal(day).time).uppercase(Locale.ITALIAN),
+                            color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
+                    IconButton(onClick = { day = dayStr(dayCal(day).apply { add(Calendar.DAY_OF_MONTH, 1) }) }) {
+                        Icon(Icons.Rounded.ChevronRight, "Giorno successivo", tint = accent2)
+                    }
+                }
+                TextButton(onClick = { day = dayStr(Calendar.getInstance()) }, Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("OGGI", color = accent2, fontSize = 12.sp)
+                }
+                if (configured && list.isEmpty()) Text("Nessun appuntamento", color = Muted, fontSize = 12.sp)
+                list.forEach { a ->
+                    NeonCard(Modifier.fillMaxWidth(), accent2, onClick = { editing = a }) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(a.time, color = accent, fontWeight = FontWeight.Black, fontSize = 18.sp, fontFamily = FontFamily.Monospace)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(a.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text(a.type, color = accent2, fontSize = 11.sp)
+                            }
+                        }
+                        if (a.addr.isNotBlank()) Text(a.addr, color = Muted, fontSize = 12.sp)
+                        if (a.tel.isNotBlank()) Text(a.tel, color = Cyan, fontSize = 12.sp,
+                            modifier = Modifier.clickable { tryStart(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(a.tel)))) })
+                        if (a.note.isNotBlank()) Text(a.note, color = Muted, fontSize = 11.sp)
+                    }
+                }
+                Spacer(Modifier.height(80.dp))
+            }
+            if (configured) FloatingActionButton(onClick = { creating = true },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp), containerColor = accent) {
+                Icon(Icons.Rounded.Add, "Nuovo appuntamento", tint = Color.White)
+            }
+        }
+        if (creating) SomnoForm(null, day) { creating = false }
+        editing?.let { SomnoForm(it, day) { editing = null } }
+    }
+
+    @Composable
+    private fun SomnoForm(apt: SomnoApts.Apt?, defaultDay: String, onDismiss: () -> Unit) {
+        var name by remember { mutableStateOf(apt?.name ?: "") }
+        var type by remember { mutableStateOf(apt?.type?.takeIf { it.isNotEmpty() } ?: SomnoApts.TIPI.last()) }
+        var date by remember { mutableStateOf(apt?.date ?: defaultDay) }
+        var time by remember { mutableStateOf(apt?.time ?: "") }
+        var addr by remember { mutableStateOf(apt?.addr ?: "") }
+        var km by remember { mutableStateOf(apt?.km?.takeIf { it > 0 }?.let { if (it % 1.0 == 0.0) it.toLong().toString() else it.toString() } ?: "") }
+        var tel by remember { mutableStateOf(apt?.tel ?: "") }
+        var note by remember { mutableStateOf(apt?.note ?: "") }
+        var busy by remember { mutableStateOf(false) }
+        var err by remember { mutableStateOf("") }
+        var menu by remember { mutableStateOf(false) }
+        var confirmDel by remember { mutableStateOf(false) }
+
+        fun run(okMsg: String, block: () -> SomnoApts.WriteResult) {
+            if (SomnoApts.status != SomnoApts.Live.ONLINE) { err = "Offline: modifiche non consentite"; return }
+            busy = true; err = ""
+            Thread {
+                val r = try { block() } catch (e: Exception) { SomnoApts.WriteResult(false, "Errore: ${e.message ?: "sconosciuto"}") }
+                runOnUiThread {
+                    busy = false
+                    if (r.ok && r.duplicates.isNotEmpty()) err = "Appuntamento già presente"
+                    else if (r.ok) { android.widget.Toast.makeText(this@MainActivity, okMsg, android.widget.Toast.LENGTH_SHORT).show(); onDismiss() }
+                    else err = r.msg
+                }
+            }.start()
+        }
+
+        fun save() {
+            val kmV = if (km.isBlank()) 0.0 else km.trim().replace(',', '.').toDoubleOrNull()
+            val bad = SomnoApts.validate(name, date, time, addr) ?: if (kmV == null || kmV < 0) "Km non valido" else null
+            if (bad != null) { err = bad; return }
+            val base = apt ?: SomnoApts.Apt("", "", "", "", "", "", 0.0, "", "media", "", "", "", "", "", false, 0L, org.json.JSONObject())
+            val n = base.copy(name = name.trim(), type = type, date = date, time = time, addr = addr.trim(),
+                km = kmV ?: 0.0, tel = tel.trim(), note = note)
+            val ctx = this@MainActivity
+            if (apt == null) run("Appuntamento aggiunto") { SomnoApts.add(ctx, listOf(n)) }
+            else run("Appuntamento modificato") { SomnoApts.update(ctx, n) }
+        }
+
+        AlertDialog(
+            onDismissRequest = { if (!busy) onDismiss() },
+            containerColor = Panel,
+            title = { Text(if (apt == null) "NUOVO APPUNTAMENTO" else "MODIFICA APPUNTAMENTO", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, enabled = !busy,
+                        label = { Text("Nome") }, colors = fieldColors())
+                    Box {
+                        OutlinedButton(onClick = { menu = true }, Modifier.fillMaxWidth(), enabled = !busy) {
+                            Text("Tipo: $type", color = accent2, fontSize = 12.sp)
+                        }
+                        DropdownMenu(menu, { menu = false }) {
+                            SomnoApts.TIPI.forEach { t -> DropdownMenuItem(text = { Text(t) }, onClick = { type = t; menu = false }) }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            val c = dayCal(date)
+                            android.app.DatePickerDialog(this@MainActivity, { _, y, m, d ->
+                                date = String.format(Locale.ROOT, "%04d-%02d-%02d", y, m + 1, d)
+                            }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)).show()
+                        }, Modifier.weight(1f), enabled = !busy) { Text(date, color = accent2, fontSize = 12.sp) }
+                        OutlinedButton(onClick = {
+                            val h = time.substringBefore(':').toIntOrNull() ?: 9
+                            val mi = time.substringAfter(':', "0").toIntOrNull() ?: 0
+                            android.app.TimePickerDialog(this@MainActivity, { _, hh, mm ->
+                                time = String.format(Locale.ROOT, "%02d:%02d", hh, mm)
+                            }, h, mi, true).show()
+                        }, Modifier.weight(1f), enabled = !busy) { Text(time.ifEmpty { "Ora" }, color = accent2, fontSize = 12.sp) }
+                    }
+                    OutlinedTextField(addr, { addr = it }, Modifier.fillMaxWidth(), enabled = !busy,
+                        label = { Text("Indirizzo") }, colors = fieldColors())
+                    OutlinedTextField(km, { km = it }, Modifier.fillMaxWidth(), singleLine = true, enabled = !busy,
+                        keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                        label = { Text("Km") }, colors = fieldColors())
+                    OutlinedTextField(tel, { tel = it }, Modifier.fillMaxWidth(), singleLine = true, enabled = !busy,
+                        keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Phone),
+                        label = { Text("Telefono") }, colors = fieldColors())
+                    OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), enabled = !busy,
+                        label = { Text("Note") }, colors = fieldColors())
+                    if (err.isNotEmpty()) Text(err, color = NeonRed, fontSize = 12.sp)
+                    if (busy) Text("Scrittura in corso…", color = Muted, fontSize = 11.sp)
+                    if (apt != null) TextButton(onClick = { confirmDel = true }, enabled = !busy) {
+                        Text("ELIMINA", color = NeonRed, fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { save() }, enabled = !busy) { Text("SALVA", color = accent2) } },
+            dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("ANNULLA", color = Muted) } },
+        )
+        if (confirmDel && apt != null) AlertDialog(
+            onDismissRequest = { if (!busy) confirmDel = false },
+            containerColor = Panel,
+            title = { Text("Eliminare l'appuntamento?", color = Color.White, fontSize = 14.sp) },
+            text = { Text("${apt.name} • ${apt.date} ${apt.time}", color = Muted, fontSize = 12.sp) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDel = false
+                    val ctx = this@MainActivity
+                    run("Appuntamento eliminato") { SomnoApts.delete(ctx, listOf(apt.id)) }
+                }, enabled = !busy) { Text("ELIMINA", color = NeonRed) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDel = false }, enabled = !busy) { Text("ANNULLA", color = Muted) } },
+        )
     }
 
     private fun isAssistant(): Boolean = try {
@@ -1648,7 +1896,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
             Box(Modifier.fillMaxWidth().height(1.dp).background(Brush.horizontalGradient(listOf(Color.Transparent, accent.copy(alpha = .7f), accent2.copy(alpha = .7f), Color.Transparent))))
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                 items.forEach { (s, ic, label) ->
-                    val sel = screen == s || (s == Screen.MODULES && screen in listOf(Screen.MODULE, Screen.AUTOMATE, Screen.MEMORY))
+                    val sel = screen == s || (s == Screen.MODULES && screen in listOf(Screen.MODULE, Screen.AUTOMATE, Screen.MEMORY, Screen.SOMNO))
                     Column(Modifier.weight(1f).clickable { screen = s }.padding(vertical = 4.dp),
                         horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(ic, label, tint = if (sel) accent else Muted, modifier = Modifier.size(24.dp))

@@ -30,6 +30,22 @@ La prima volta Windows può chiedere di consentire JARVIS sulle reti private: va
 - Le copie sul telefono non sono cifrate a livello applicativo (sono nella memoria privata dell'app); tieni il telefono con blocco schermo.
 - Progetto non compilato in locale (manca l'SDK Android su questo PC): la build avviene su GitHub Actions.
 
+## Appuntamenti SomnoDesk (lettura e scrittura, in tempo reale)
+Modulo **SOMNO** → Appuntamenti: elenco per giorno, inserimento (+), modifica e rimozione (tocca un appuntamento),
+allineati con JARVIS desktop e SomnoDesk tramite lo stesso Firebase (`/sd/apts`).
+- **Configurazione (una volta):** Impostazioni → SOMNODESK → URL database e API key (gli stessi di `SOMNO_DB_URL` /
+  `SOMNO_API_KEY` del desktop, vedi `electron/services/config.js` o `.env`), email/password solo se usate sul PC → SALVA → PROVA CONNESSIONE.
+  I valori non sono nel codice di proposito: il repository è su GitHub e i dati sono sanitari.
+- **Sincronia:** con l'app aperta resta collegata in streaming; le modifiche fatte altrove compaiono da sole.
+  Ogni scrittura rilegge l'archivio e usa `if-match` (ETag): se un altro dispositivo ha scritto nel frattempo, riprova (max 3).
+  Le rimozioni sono come in SomnoDesk (`_deleted` + `updatedAt`), quindi si propagano a tutti.
+- **Offline:** si vede l'ultima copia (badge OFFLINE con l'ora), ma inserimenti/modifiche/rimozioni sono bloccati.
+- **In chat:** "appuntamenti di domani", "appuntamenti di lunedì", "appuntamenti del 12/11" (sola lettura).
+- Nessun dato dei pazienti nei log; backup Android disattivato. Password e refresh token sono cifrati (AES-GCM) con una chiave
+  del Keystore Android che non lascia il telefono, e con la stessa chiave è cifrata anche la copia offline degli appuntamenti.
+  Valori salvati in chiaro da una versione precedente vengono cifrati al primo uso.
+  Se la chiave andasse persa (es. ripristino del telefono) basta reinserire la password nelle Impostazioni; la copia offline si riscarica da sola.
+
 ## Pubblicare su GitHub (repository nuovo)
 1. Crea un repository vuoto (es. `Jarvisandroid-v3`) e carica il contenuto di questa cartella.
 2. **Firma:** per installare la 3.1 *sopra* la versione già sul telefono senza perdere note e modelli,
