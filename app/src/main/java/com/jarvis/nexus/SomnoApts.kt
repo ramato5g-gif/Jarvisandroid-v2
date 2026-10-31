@@ -326,7 +326,7 @@ object SomnoApts {
         main.post { liveApts = apts; status = st; updatedAt = at }
     }
 
-    private fun setStatus(st: Live) { main.post { status = st } }
+    private fun postStatus(st: Live) { main.post { status = st } }
 
     /** Applica un evento put/patch di Firebase al valore locale {d,t}. */
     private fun applyEvent(root: JSONObject?, ev: String, path: String, data: Any?): JSONObject? {
@@ -365,7 +365,7 @@ object SomnoApts {
         liveThread = null
         t.interrupt()
         try { liveConn?.disconnect() } catch (e: Exception) { }
-        setStatus(Live.OFFLINE)
+        postStatus(Live.OFFLINE)
     }
 
     private fun liveLoop(ctx: Context) {
@@ -410,7 +410,7 @@ object SomnoApts {
                                     if (raw.isNotEmpty() || loadCache(ctx)?.raw.isNullOrEmpty()) try { saveCache(ctx, raw) } catch (x2: Exception) { }
                                     delay = RETRY_MS
                                     publish(visible(raw), Live.ONLINE)
-                                } catch (x: IllegalStateException) { setStatus(Live.ERROR)
+                                } catch (x: IllegalStateException) { postStatus(Live.ERROR)
                                 } catch (x: org.json.JSONException) { /* evento non valido: ignoro */ }
                             } else if (line.startsWith("event:")) ev = line.substring(6).trim()
                             else if (line.startsWith("data:")) {
@@ -423,9 +423,9 @@ object SomnoApts {
             } catch (e: InterruptedException) {
                 return
             } catch (e: java.io.IOException) {
-                if (!stopped()) setStatus(Live.OFFLINE)
+                if (!stopped()) postStatus(Live.OFFLINE)
             } catch (e: Exception) {
-                if (!stopped()) setStatus(Live.ERROR)
+                if (!stopped()) postStatus(Live.ERROR)
             }
             if (stopped()) return
             if (revoked) { force = true; root = null; continue }
