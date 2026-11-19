@@ -160,9 +160,10 @@ App Wear OS che usa **lo stesso cervello del telefono**: l'orologio manda la dom
 - **Tile "JARVIS"**: anello HUD ciano con l'ultima risposta; il tocco apre JARVIS già in ascolto.
   Aggiungila tenendo premuto il quadrante → scorri i riquadri → **+** → JARVIS.
 - **Complication "JARVIS"**: icona che apre l'app, da mettere su qualsiasi quadrante (Modifica quadrante → Complicazioni → JARVIS).
-- **Quadrante "JARVIS HUD"**: ora digitale, data, secondi e archi HUD animati, ultima risposta, puntino di collegamento
-  e due complication personalizzabili (default batteria e passi). Tocco sull'ora = JARVIS in ascolto.
-  In ambient mostra solo ora, data e tacche. Selezionalo tenendo premuto il quadrante attuale → scorri → JARVIS HUD.
+- **Quadrante "JARVIS HUD"** (design Visore): ghiera con scala e numeri orientati, scia radar e punto luminoso dei secondi,
+  ora in Roboto Thin sfumata, data tra filetti, puntino di collegamento col telefono e due indicatori curvi
+  alimentati da complication (default batteria e passi, modificabili dall'editor). Tocco sull'ora = JARVIS in ascolto.
+  In ambient restano solo ora, data e tacche delle ore. Selezionalo tenendo premuto il quadrante attuale → scorri → JARVIS HUD.
 
 **Installazione** (la Release contiene anche `JARVIS-WATCH-*.apk`, firmato con la stessa chiave del telefono — obbligatorio):
 1. Aggiorna JARVIS sul telefono con l'APK della stessa Release.
