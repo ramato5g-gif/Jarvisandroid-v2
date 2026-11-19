@@ -7,6 +7,9 @@
     <queries>
         <intent><action android:name="android.speech.action.RECOGNIZE_SPEECH" /></intent>
         <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
+        <!-- "apri <app>" e "chiama <contatto>" eseguiti sull'orologio -->
+        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent>
+        <intent><action android:name="android.intent.action.DIAL" /><data android:scheme="tel" /></intent>
     </queries>
     <application
         android:label="JARVIS"
@@ -26,5 +29,39 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Tile JARVIS: anello HUD + ultima risposta, tocco = ascolto immediato -->
+        <service android:name=".JarvisTileService"
+            android:label="JARVIS"
+            android:exported="true"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter><action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" /></intent-filter>
+            <meta-data android:name="androidx.wear.tiles.PREVIEW" android:resource="@drawable/ic_launcher_foreground" />
+        </service>
+
+        <!-- Complication: icona JARVIS da mettere su qualsiasi quadrante -->
+        <service android:name=".JarvisComplicationService"
+            android:label="JARVIS"
+            android:icon="@drawable/ic_jarvis"
+            android:exported="true"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter><action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" /></intent-filter>
+            <meta-data android:name="android.support.wearable.complications.SUPPORTED_TYPES" android:value="SHORT_TEXT,ICON,SMALL_IMAGE" />
+            <meta-data android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS" android:value="0" />
+        </service>
+
+        <!-- Quadrante JARVIS HUD -->
+        <service android:name=".JarvisWatchFace"
+            android:label="JARVIS HUD"
+            android:exported="true"
+            android:permission="android.permission.BIND_WALLPAPER">
+            <intent-filter>
+                <action android:name="android.service.wallpaper.WallpaperService" />
+                <category android:name="com.google.android.wearable.watchface.category.WATCH_FACE" />
+            </intent-filter>
+            <meta-data android:name="android.service.wallpaper" android:resource="@xml/watch_face" />
+            <meta-data android:name="com.google.android.wearable.watchface.preview" android:resource="@drawable/ic_launcher_foreground" />
+            <meta-data android:name="com.google.android.wearable.watchface.preview_circular" android:resource="@drawable/ic_launcher_foreground" />
+        </service>
     </application>
 </manifest>

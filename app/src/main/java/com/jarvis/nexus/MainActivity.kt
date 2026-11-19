@@ -13,6 +13,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
@@ -327,6 +328,7 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         altTheme = prefs.getBoolean("alt_theme", false)
         notes.addAll(parseList(prefs.getString("notes", "") ?: "", "• "))
         tasks.addAll(parseList(prefs.getString("tasks", "") ?: "", "□ "))
+        prefs.registerOnSharedPreferenceChangeListener(listsListener)
         routines.forEach { routineOn[it.id] = prefs.getBoolean("routine_${it.id}", it.id == "morning") }
         osEnabled = OsData.isLauncherEnabled(this)
         osCity = prefs.getString("os_city", "Catania") ?: "Catania"
@@ -368,6 +370,7 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
     override fun onResume() {
         super.onResume(); resumeTick++
+        reloadLists()   // note/attività aggiunte dall'orologio mentre l'app era in pausa
         if (launcherMode) scope.launch { osApps = withContext(Dispatchers.IO) { try { OsData.loadApps(this@MainActivity) } catch (e: Exception) { osApps } } }
         osEnabled = OsData.isLauncherEnabled(this)
     }
@@ -382,6 +385,7 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (assistMode && !isChangingConfigurations) finish()
     }
     override fun onDestroy() {
+        prefs.unregisterOnSharedPreferenceChangeListener(listsListener)
         recognizer?.destroy(); recognizer = null
         brain.unload()
         val t = tts
@@ -396,6 +400,14 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun err(m: String) { messages.add(Line("ERROR", m)) }
     private fun parseList(txt: String, prefix: String) =
         txt.lines().map { it.trim().removePrefix(prefix.trim()).trim() }.filter { it.isNotBlank() }
+    // WearBridgeService scrive "notes"/"tasks" in prefs: le liste in memoria si riallineano subito (listener sul main thread)
+    private val listsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, k -> if (k == "notes" || k == "tasks") reloadLists() }
+    private fun reloadLists() {
+        val n = parseList(prefs.getString("notes", "") ?: "", "• ")
+        val t = parseList(prefs.getString("tasks", "") ?: "", "□ ")
+        if (n != notes.toList()) { notes.clear(); notes.addAll(n) }
+        if (t != tasks.toList()) { tasks.clear(); tasks.addAll(t) }
+    }
     private fun saveLists() {
         prefs.edit().putString("notes", notes.joinToString("\n") { "• $it" })
             .putString("tasks", tasks.joinToString("\n") { "□ $it" }).apply()

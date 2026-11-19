@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Icona monocromatica JARVIS (anelli HUD + triangolo) per complication -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M12.8,2.05 A10,10 0 0,1 21.95,11.2" android:strokeColor="#FFFFFF" android:strokeWidth="1.6" android:strokeLineCap="round" />
+    <path android:pathData="M21.95,12.8 A10,10 0 0,1 12.8,21.95" android:strokeColor="#FFFFFF" android:strokeWidth="1.6" android:strokeLineCap="round" />
+    <path android:pathData="M11.2,21.95 A10,10 0 0,1 2.05,12.8" android:strokeColor="#FFFFFF" android:strokeWidth="1.6" android:strokeLineCap="round" />
+    <path android:pathData="M2.05,11.2 A10,10 0 0,1 11.2,2.05" android:strokeColor="#FFFFFF" android:strokeWidth="1.6" android:strokeLineCap="round" />
+    <path android:pathData="M6.5,12 a5.5,5.5 0 1,0 11,0 a5.5,5.5 0 1,0 -11,0" android:strokeColor="#FFFFFF" android:strokeWidth="1.2" />
+    <path android:pathData="M9.3,10.2 L14.7,10.2 L12,14.6 Z" android:fillColor="#FFFFFF" />
+</vector>
