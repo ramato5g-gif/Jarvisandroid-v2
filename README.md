@@ -3,6 +3,55 @@
 Versione 3.1: tutto quello che c'era nella v3.0 **più** il modulo **REPORT**, che tiene sul telefono
 una copia aggiornata dei report mensili Sapio (registro + Excel Allegato D) di JARVIS desktop.
 
+## JARVIS OS — modalità launcher per Galaxy Tab S6 Lite
+La stessa app diventa la **schermata Home** del tablet. Sul telefono non cambia nulla: il launcher è un componente
+separato (`LauncherActivity`), **spento di default**, che si accende solo da *Sistema → JARVIS OS*.
+
+**Cosa fa**
+- **Home tablet** (orizzontale): a sinistra orologio, nucleo HUD (tocca = parla, tieni premuto = chat), meteo a 3 giorni,
+  stato sistema, agenda delle prossime 48 ore, nodi di rete, app fissate; a destra la chat con Claude Haiku sempre aperta.
+  In verticale le due metà sono una sopra l'altra.
+- **App**: griglia con ricerca (Invio apre la prima); tieni premuto per fissare/sganciare un'app in Home.
+- **File**: esplora la memoria interna, cerca per nome, apre con l'app giusta. Il tasto Indietro risale le cartelle.
+- **Claude agisce sul tablet** con nuove azioni oltre a quelle già esistenti: `findfile` (cerca file), `openfile` (apre un file),
+  `brightness` (luminosità), e `event` ora **scrive direttamente** nel calendario (prima apriva solo l'editor).
+  Nel prompt di Claude entrano anche meteo e prossimi eventi, quindi "cosa ho domani?" o "serve l'ombrello?" funzionano senza azioni.
+- **Nodi di rete**: elenco `Nome|http://ip:porta` (PC JARVIS, Pi 5, Pi-hole…) con stato online/offline e latenza, aggiornato ogni minuto.
+- Tasto Home dentro JARVIS OS → torna alla Home; Indietro sulla Home non chiude nulla.
+
+**Attivazione sul tablet**
+1. Installa l'APK della Release (stessa firma del telefono).
+2. *Sistema → JARVIS OS* → **Modalità launcher** → scegli **JARVIS OS** come Home predefinita ("Sempre").
+3. Nella stessa scheda: **ACCESSO FILE** e **LUMINOSITÀ** (permessi speciali), poi città/coordinate per il meteo e i nodi.
+4. Consenti il calendario quando richiesto (scheda Agenda).
+5. Opzionale: *Sistema → Accesso rapido* → JARVIS come assistente predefinito (pressione lunga Home = ascolto).
+
+Meteo: Open-Meteo, senza chiave. Il calendario legge/scrive i calendari presenti sul tablet: senza account Google (LineageOS senza GApps)
+serve un calendario locale o DAVx5 + Etar, altrimenti `event` ripiega sull'editor.
+
+## Installare LineageOS sul Tab S6 Lite (opzionale)
+> Verifica sempre i passaggi sulla pagina ufficiale prima di iniziare: https://wiki.lineageos.org/devices/gta4xlwifi/install/
+
+- **Solo SM-P610** (Wi-Fi 2020, Exynos 9611, codename `gta4xlwifi`). Il modello LTE `SM-P615` ha la sua guida (`gta4xl`);
+  la versione **2024** è un altro dispositivo (`gta4xlswifi`, Exynos 1280). Controlla in Impostazioni → Info tablet.
+- Versione mantenuta: **LineageOS 23.2 (Android 16)**. Prima serve il **firmware Samsung Android 13 più recente**.
+- Sbloccare il bootloader **cancella tutto** e fa scattare **Knox** in modo permanente (Samsung Pass, Cartella sicura, alcune app bancarie).
+
+**Passaggi (in sintesi)**
+1. Aggiorna il tablet all'ultimo firmware Android 13. Backup di tutto.
+2. Opzioni sviluppatore → **Sblocco OEM** attivo, **Debug USB** attivo.
+3. Spegni, tieni **Vol+ e Vol−** e collega il cavo USB → modalità Download → pressione lunga **Vol+** per sbloccare il bootloader (reset).
+4. Riavvia, completa la configurazione, collegati a Internet e ricontrolla che *Sblocco OEM* sia attivo (grigio).
+5. Dalla pagina download scarica **recovery** e **vbmeta** di LineageOS e flashali dalla modalità Download
+   (Heimdall o Odin, con i comandi esatti indicati nel wiki), poi avvia direttamente la recovery senza far partire Android.
+6. In Lineage Recovery: **Factory reset → Format data**, poi **Apply update → Apply from ADB** e dal PC
+   `adb sideload lineage-23.2-…-gta4xlwifi-signed.zip`.
+7. **Prima del primo avvio** sideload di **MindTheGapps** per Android 16 arm64 (Advanced → Reboot to recovery, poi di nuovo Apply from ADB).
+   Senza GApps JARVIS funziona, ma mancano il riconoscimento vocale Google, la voce TTS Google e lo scanner QR dei report.
+8. Riavvia, accedi a Google, installa JARVIS e segui "Attivazione sul tablet".
+
+---
+
 ## Report mensili: come funziona
 - **Sola lettura.** Il telefono fa solo richieste `GET` al PC e salva copie nella cartella privata dell'app.
   Non invia dati, non modifica e non cancella nulla sul PC. Anche lato PC il servizio accetta solo `GET`

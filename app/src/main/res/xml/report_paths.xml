@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <files-path name="reports" path="reports/" />
+    <!-- JARVIS OS: apertura file della memoria condivisa -->
+    <external-path name="storage" path="." />
 </paths>

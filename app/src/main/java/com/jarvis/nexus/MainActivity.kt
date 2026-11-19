@@ -52,6 +52,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -117,7 +119,7 @@ private val Green = Color(0xFF3DDC97)
 private val Muted = Color(0xFF8593A8)
 
 private data class Line(val who: String, val message: String)
-private enum class Screen { HOME, CHAT, MODULES, MODULE, DEVICE, AUTOMATE, MEMORY, SETTINGS, REPORTS, SOMNO }
+private enum class Screen { HOME, CHAT, MODULES, MODULE, DEVICE, AUTOMATE, MEMORY, SETTINGS, REPORTS, SOMNO, APPS, FILES }
 private data class Module(val id: String, val sub: String, val icon: ImageVector, val actions: List<String> = emptyList()) {
     val title: String get() = id
 }
@@ -208,6 +210,8 @@ private fun actionIcon(a: String): ImageVector = when (a) {
 open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     /** true nella finestra rapida (AssistActivity), false nell'app completa. */
     protected open val assistMode: Boolean = false
+    /** true quando l'app è la schermata Home del tablet (JARVIS OS, LauncherActivity). */
+    protected open val launcherMode: Boolean = false
     private lateinit var brain: LocalBrain
     private var tts: TextToSpeech? = null
     private val prefs by lazy { getSharedPreferences("nexus_local", MODE_PRIVATE) }
@@ -243,6 +247,18 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var resumeTick by mutableStateOf(0)
     private var reportsVersion by mutableStateOf(0)
     private var reportsBusy by mutableStateOf(false)
+
+    // ───────────── JARVIS OS (launcher tablet) ─────────────
+    private var osApps by mutableStateOf<List<OsData.App>>(emptyList())
+    private var osEvents by mutableStateOf<List<OsData.Event>>(emptyList())
+    private var osWeather by mutableStateOf<OsData.Weather?>(null)
+    private var osNodes by mutableStateOf<List<OsData.Node>>(emptyList())
+    private var pinned by mutableStateOf<List<String>>(emptyList())
+    private var osEnabled by mutableStateOf(false)
+    private var osCity by mutableStateOf("Catania")
+    private var osLat by mutableStateOf("37.5079")
+    private var osLon by mutableStateOf("15.0830")
+    private var osNodesTxt by mutableStateOf("")
 
     private val accent: Color get() = if (altTheme) NeonBlue else NeonRed
     private val accent2: Color get() = if (altTheme) NeonRed else NeonBlue
@@ -311,6 +327,12 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         notes.addAll(parseList(prefs.getString("notes", "") ?: "", "• "))
         tasks.addAll(parseList(prefs.getString("tasks", "") ?: "", "□ "))
         routines.forEach { routineOn[it.id] = prefs.getBoolean("routine_${it.id}", it.id == "morning") }
+        osEnabled = OsData.isLauncherEnabled(this)
+        osCity = prefs.getString("os_city", "Catania") ?: "Catania"
+        osLat = prefs.getString("os_lat", "37.5079") ?: "37.5079"
+        osLon = prefs.getString("os_lon", "15.0830") ?: "15.0830"
+        osNodesTxt = prefs.getString("os_nodes", "") ?: ""
+        pinned = (prefs.getString("os_pinned", "") ?: "").split(",").filter { it.isNotBlank() }
         if (!assistMode) messages.add(Line("JARVIS", "Ciao $userName. Sono JARVIS, il tuo assistente. Come posso aiutarti?"))
         tts = TextToSpeech(this, this)
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -332,13 +354,22 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (!assistMode && ReportSync.pairing(this) != null) { ReportSyncWorker.schedule(this); syncReports(silent = true) }
         setContent { if (assistMode) AssistOverlay() else NexusApp() }
         if (assistMode) listen()
+        if (launcherMode && !OsData.hasCalendar(this)) {
+            pendingAfterPerm = { scope.launch { refreshOs(false) } }
+            permLauncher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
+        }
     }
     override fun onInit(status: Int) { if (status == TextToSpeech.SUCCESS) tts?.language = Locale.ITALIAN }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (assistMode && !listening) listen()
+        if (launcherMode) screen = Screen.HOME   // tasto Home premuto dentro JARVIS OS
     }
-    override fun onResume() { super.onResume(); resumeTick++ }
+    override fun onResume() {
+        super.onResume(); resumeTick++
+        if (launcherMode) scope.launch { osApps = withContext(Dispatchers.IO) { try { OsData.loadApps(this@MainActivity) } catch (e: Exception) { osApps } } }
+        osEnabled = OsData.isLauncherEnabled(this)
+    }
     override fun onStart() {
         super.onStart()
         if (SomnoApts.isConfigured(this)) SomnoApts.startLive(this)
@@ -515,7 +546,7 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 val i = packageManager.getLaunchIntentForPackage("com.whatsapp")
                 if (i != null) launchSafe(i, "WhatsApp aperto.") else sys("WhatsApp non installato.")
             }
-            "File" -> launchSafe(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE) }, "Selettore file aperto.")
+            "File" -> if (launcherMode) screen = Screen.FILES else launchSafe(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE) }, "Selettore file aperto.")
             "Wi-Fi" -> panelOr(Settings.Panel.ACTION_WIFI, Settings.ACTION_WIFI_SETTINGS, "Pannello Wi-Fi aperto.")
             "Dati mobili" -> panelOr(Settings.Panel.ACTION_INTERNET_CONNECTIVITY, Settings.ACTION_WIRELESS_SETTINGS, "Pannello connessione aperto.")
             "NFC" -> panelOr(Settings.Panel.ACTION_NFC, Settings.ACTION_NFC_SETTINGS, "Pannello NFC aperto.")
@@ -575,10 +606,19 @@ open class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun systemPrompt(): String {
         val now = SimpleDateFormat("EEEE d MMMM yyyy, HH:mm", Locale.ITALIAN).format(Date())
-        return """Sei J.A.R.V.I.S., l'assistente personale di $userName su uno smartphone Android (${Build.MANUFACTURER} ${Build.MODEL}).
+        val device = if (launcherMode || OsData.isTablet(this)) "un tablet Android (${Build.MANUFACTURER} ${Build.MODEL}) di cui sei il sistema operativo: JARVIS OS"
+                     else "uno smartphone Android (${Build.MANUFACTURER} ${Build.MODEL})"
+        val ctx = buildString {
+            osWeather?.let { append("Meteo a $osCity: ${OsData.describe(it.code)}, %.0f°C.\n".format(Locale.ITALIAN, it.temp)) }
+            if (osEvents.isNotEmpty()) {
+                val f = SimpleDateFormat("EEE d MMM HH:mm", Locale.ITALIAN)
+                append("Prossimi eventi del calendario: " + osEvents.take(8).joinToString("; ") { "${f.format(Date(it.begin))} ${it.title}" } + ".\n")
+            }
+        }
+        return """Sei J.A.R.V.I.S., l'assistente personale di $userName su $device.
 Rispondi sempre in italiano, in modo conciso (massimo 3 frasi), naturale da ascoltare a voce: niente markdown, elenchi o emoji. Tono cortese e brillante, come il JARVIS di Iron Man.
 Data e ora attuali: $now. Batteria: ${stats.battery}%.
-Se l'utente chiede di compiere un'azione sul telefono, la PRIMA riga della risposta deve essere esattamente
+${ctx}Se l'utente chiede di compiere un'azione sul telefono, la PRIMA riga della risposta deve essere esattamente
 AZIONE: {json su una sola riga}
 seguita da una breve frase di conferma. Azioni disponibili:
 {"type":"open","app":"nome app o impostazione"}
@@ -598,6 +638,9 @@ seguita da una breve frase di conferma. Azioni disponibili:
 {"type":"note","text":"..."}
 {"type":"task","text":"..."}
 {"type":"camera"}
+{"type":"findfile","q":"parte del nome del file"}
+{"type":"openfile","q":"nome o percorso del file"}
+{"type":"brightness","level":60}
 Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuori da questo elenco. Per domande normali rispondi senza riga AZIONE."""
     }
 
@@ -639,7 +682,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
             val c = cmd
             if (c != null) {
                 val r = execute(c)
-                reply(if (!r.ok || text.isBlank()) r.msg else text, "HAIKU")
+                reply(if (!r.ok || text.isBlank() || c.type == "findfile") r.msg else text, "HAIKU")
             } else reply(text.ifBlank { "Fatto." }, engine)
             isBusy = false
         }
@@ -679,12 +722,19 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                 else fail("Non riesco ad avviare il timer.")
             }
             "event" -> {
-                val i = Intent(Intent.ACTION_INSERT).setData(CalendarContract.Events.CONTENT_URI).putExtra(CalendarContract.Events.TITLE, c["title"])
-                parseIso(c["start"])?.let { st ->
-                    i.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, st)
-                    i.putExtra(CalendarContract.EXTRA_EVENT_END_TIME, parseIso(c["end"]) ?: (st + 3_600_000L))
+                val st = parseIso(c["start"])
+                val en = parseIso(c["end"]) ?: st?.plus(3_600_000L)
+                if (st != null && en != null && OsData.insertEvent(this, c["title"], st, en) != null) {
+                    scope.launch { refreshOs(false) }
+                    ok("Evento \"${c["title"]}\" aggiunto al calendario.")
+                } else {
+                    val i = Intent(Intent.ACTION_INSERT).setData(CalendarContract.Events.CONTENT_URI).putExtra(CalendarContract.Events.TITLE, c["title"])
+                    if (st != null && en != null) {
+                        i.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, st)
+                        i.putExtra(CalendarContract.EXTRA_EVENT_END_TIME, en)
+                    }
+                    if (tryStart(i)) ok("Evento pronto: confermalo nel calendario.") else fail("Calendario non disponibile.")
                 }
-                if (tryStart(i)) ok("Evento pronto: confermalo nel calendario.") else fail("Calendario non disponibile.")
             }
             "navigate" -> if (tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=" + Uri.encode(c["to"])))) ||
                 tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(c["to"]))))) ok("Navigazione verso ${c["to"]}.")
@@ -705,6 +755,27 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
             "note" -> { notes.add(c["text"]); saveLists(); ok("Nota salvata.") }
             "task" -> { tasks.add(c["text"]); saveLists(); ok("Attività aggiunta.") }
             "camera" -> if (tryStart(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA))) ok("Fotocamera pronta.") else fail("Fotocamera non disponibile.")
+            "findfile" -> if (!OsData.hasFilesAccess()) fail("Mi serve l'accesso a tutti i file: Sistema → JARVIS OS.") else {
+                val r = OsData.search(c["q"], 15)
+                if (r.isEmpty()) fail("Nessun file con \"${c["q"]}\" nel nome.")
+                else ok("Ho trovato ${r.size} file:\n" + r.joinToString("\n") { "• " + it.absolutePath.removePrefix(OsData.root.absolutePath + "/") })
+            }
+            "openfile" -> if (!OsData.hasFilesAccess()) fail("Mi serve l'accesso a tutti i file: Sistema → JARVIS OS.") else {
+                val f = OsData.resolve(c["q"]).takeIf { it.isFile } ?: OsData.search(c["q"], 1).firstOrNull()
+                when {
+                    f == null -> fail("Non trovo il file ${c["q"]}.")
+                    OsData.open(this, f) -> ok("Apro ${f.name}.")
+                    else -> fail("Nessuna app può aprire ${f.name}.")
+                }
+            }
+            "brightness" -> {
+                val l = c["level"].toIntOrNull()
+                when {
+                    l == null -> if (tryStart(Intent(Settings.ACTION_DISPLAY_SETTINGS))) ok("Apro le impostazioni dello schermo.") else fail("Impostazioni non disponibili.")
+                    OsData.setBrightness(this, l) -> ok("Luminosità al ${l.coerceIn(1, 100)}%.")
+                    else -> { tryStart(OsData.writeSettingsIntent(this)); fail("Concedi a JARVIS la modifica delle impostazioni di sistema, poi ripeti.") }
+                }
+            }
             else -> fail("Azione non supportata: ${c.type}.")
         }
     } catch (e: Exception) { fail("Non ci sono riuscito: ${e.message}") }
@@ -1079,6 +1150,11 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                 delay(3000)
             }
         }
+        if (launcherMode) LaunchedEffect(resumeTick) {
+            var n = 0
+            while (true) { refreshOs(weatherToo = n % 30 == 0); n++; delay(60_000) }
+        }
+        BackHandler(enabled = launcherMode && screen == Screen.HOME) { }   // la Home non si chiude
         BackHandler(enabled = screen != Screen.HOME) {
             screen = when (screen) { Screen.MODULE, Screen.MEMORY, Screen.AUTOMATE, Screen.REPORTS, Screen.SOMNO -> Screen.MODULES; else -> Screen.HOME }
         }
@@ -1087,7 +1163,9 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     Crossfade(targetState = screen, label = "screen") { s ->
                         when (s) {
-                            Screen.HOME -> HomeScreen()
+                            Screen.HOME -> if (launcherMode) OsHome() else HomeScreen()
+                            Screen.APPS -> AppsScreen()
+                            Screen.FILES -> FilesScreen()
                             Screen.CHAT -> ChatScreen()
                             Screen.MODULES -> ModulesScreen()
                             Screen.MODULE -> ModuleDetailScreen()
@@ -1481,6 +1559,7 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
                 Text("La chiave resta sul telefono (non cifrata). I messaggi inviati a Claude lasciano il dispositivo: niente dati sensibili.",
                     color = Muted, fontSize = 10.sp)
             }
+            if (launcherMode || osEnabled || OsData.isTablet(this@MainActivity)) JarvisOsCard()
             SomnoDeskCard()
             QuickAccessCard()
             ModelsCard()
@@ -1886,10 +1965,353 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
         }
     }
 
+    // ═════════════════════════ JARVIS OS (launcher tablet) ═════════════════════════
+    private suspend fun refreshOs(weatherToo: Boolean) {
+        osEvents = withContext(Dispatchers.IO) { OsData.upcoming(this@MainActivity) }
+        if (weatherToo || osWeather == null) {
+            val lat = osLat.replace(',', '.').toDoubleOrNull()
+            val lon = osLon.replace(',', '.').toDoubleOrNull()
+            if (lat != null && lon != null) withContext(Dispatchers.IO) {
+                try { OsData.weather(lat, lon) } catch (e: Exception) { null }
+            }?.let { osWeather = it }
+        }
+        val nodes = OsData.parseNodes(osNodesTxt)
+        osNodes = if (nodes.isEmpty()) emptyList() else withContext(Dispatchers.IO) { nodes.map { OsData.ping(it) } }
+    }
+
+    private fun openOsApp(pkg: String) { if (!OsData.launch(this, pkg)) sys("Impossibile aprire l'app.") }
+
+    private fun togglePin(pkg: String) {
+        pinned = if (pkg in pinned) pinned - pkg else pinned + pkg
+        prefs.edit().putString("os_pinned", pinned.joinToString(",")).apply()
+    }
+
+    private fun weatherIcon(code: Int): ImageVector = when (code) {
+        0 -> Icons.Rounded.WbSunny
+        1, 2, 3, 45, 48 -> Icons.Rounded.Cloud
+        71, 73, 75, 77, 85, 86 -> Icons.Rounded.AcUnit
+        95, 96, 99 -> Icons.Rounded.Bolt
+        else -> Icons.Rounded.Umbrella
+    }
+
+    @Composable
+    private fun OsHome() {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            if (maxWidth > maxHeight && maxWidth >= 700.dp) {
+                Row(Modifier.fillMaxSize().padding(start = 12.dp, top = 8.dp, end = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.weight(1.1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) { OsDashboard() }
+                    Box(Modifier.weight(1f).fillMaxHeight()) { ChatScreen() }
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) { OsDashboard() }
+                    Box(Modifier.weight(1f).fillMaxWidth()) { ChatScreen() }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun OsDashboard() {
+        var now by remember { mutableStateOf(Date()) }
+        LaunchedEffect(Unit) { while (true) { now = Date(); delay(1000) } }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(SimpleDateFormat("HH:mm", Locale.ITALIAN).format(now), color = Color.White, fontSize = 64.sp,
+                    fontWeight = FontWeight.Light, fontFamily = FontFamily.Monospace)
+                Text(SimpleDateFormat("EEEE d MMMM", Locale.ITALIAN).format(now).uppercase(Locale.ITALIAN),
+                    color = accent2, fontSize = 13.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Bold)
+                Text("${greeting()}, $userName.", color = Muted, fontSize = 13.sp)
+            }
+            Box(Modifier.size(170.dp).pointerInput(Unit) {
+                detectTapGestures(onTap = { listen() }, onLongPress = { screen = Screen.CHAT })
+            }) { HudCore(Modifier.fillMaxSize(), isBusy, listening, 0f, micLevel) }
+        }
+        Text(if (isBusy) "ELABORAZIONE…" else if (listening) liveText.ifBlank { "ASCOLTO…" } else "J.A.R.V.I.S. OS • TOCCA IL NUCLEO PER PARLARE",
+            color = accent, fontSize = 10.sp, letterSpacing = 2.sp)
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            WeatherCard(Modifier.weight(1f).fillMaxHeight())
+            SystemCard(Modifier.weight(1f).fillMaxHeight())
+        }
+        AgendaCard()
+        NodesCard()
+        PinnedCard()
+    }
+
+    @Composable
+    private fun CardTitle(t: String) =
+        Text(t, color = accent2, fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 1.sp)
+
+    @Composable
+    private fun WeatherCard(modifier: Modifier) {
+        NeonCard(modifier, Stroke1) {
+            CardTitle("METEO • ${osCity.uppercase(Locale.ITALIAN)}")
+            val w = osWeather
+            if (w == null) Text("In attesa dei dati…", color = Muted, fontSize = 12.sp)
+            else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(weatherIcon(w.code), null, tint = Cyan, modifier = Modifier.size(38.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text("%.0f°".format(Locale.ITALIAN, w.temp), color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                        Text(OsData.describe(w.code), color = Muted, fontSize = 11.sp)
+                    }
+                }
+                Text("Vento %.0f km/h • Umidità %d%%".format(Locale.ITALIAN, w.wind, w.humidity), color = Muted, fontSize = 10.sp)
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth()) {
+                    val cal = Calendar.getInstance()
+                    w.days.forEachIndexed { i, d ->
+                        val label = if (i == 0) "OGGI" else SimpleDateFormat("EEE", Locale.ITALIAN).format(cal.time).uppercase(Locale.ITALIAN)
+                        cal.add(Calendar.DAY_OF_YEAR, 1)
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(label, color = Muted, fontSize = 9.sp)
+                            Icon(weatherIcon(d.code), null, tint = accent2, modifier = Modifier.size(16.dp))
+                            Text("%.0f°/%.0f°".format(Locale.ITALIAN, d.max, d.min), color = Color.White, fontSize = 10.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun SystemCard(modifier: Modifier) {
+        NeonCard(modifier, Stroke1) {
+            CardTitle("SISTEMA")
+            @Composable fun bar(label: String, pct: Int, txt: String) {
+                Row(Modifier.fillMaxWidth()) {
+                    Text(label, color = Muted, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                    Text(txt, color = Color.White, fontSize = 10.sp)
+                }
+                Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(Stroke1)) {
+                    Box(Modifier.fillMaxWidth(pct.coerceIn(0, 100) / 100f).fillMaxHeight()
+                        .background(Brush.horizontalGradient(listOf(accent2, Cyan))))
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+            val s = stats
+            bar("BATTERIA" + if (s.charging) " ⚡" else "", s.battery, "${s.battery}%")
+            bar("RAM", s.ramPct, "%.1f/%.1f GB".format(Locale.ITALIAN, s.ramTotal - s.ramFree, s.ramTotal))
+            val used = if (s.storageTotal > 0) ((s.storageTotal - s.storageFree) * 100 / s.storageTotal).toInt() else 0
+            bar("MEMORIA", used, "%.0f GB liberi".format(Locale.ITALIAN, s.storageFree))
+            Text((if (s.online) "● RETE OK" else "○ OFFLINE") + "   TEMP %.0f°C".format(Locale.ITALIAN, s.temp),
+                color = if (s.online) Green else Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+
+    @Composable
+    private fun AgendaCard() {
+        NeonCard(Modifier.fillMaxWidth(), Stroke1) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { CardTitle("AGENDA • PROSSIME 48 ORE") }
+                Icon(Icons.Rounded.Add, "Nuovo evento", tint = accent2, modifier = Modifier.size(20.dp).clickable { quickAction("Calendario") })
+            }
+            val tick = resumeTick
+            if (!remember(tick, osEvents) { OsData.hasCalendar(this@MainActivity) }) {
+                OutlinedButton(onClick = {
+                    pendingAfterPerm = { scope.launch { refreshOs(false) } }
+                    permLauncher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
+                }) { Text("CONSENTI CALENDARIO", color = accent2, fontSize = 12.sp) }
+            } else if (osEvents.isEmpty()) Text("Nessun impegno.", color = Muted, fontSize = 12.sp)
+            else {
+                val day = SimpleDateFormat("EEE d", Locale.ITALIAN)
+                val hm = SimpleDateFormat("HH:mm", Locale.ITALIAN)
+                osEvents.take(6).forEach { e ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(6.dp).background(accent, CircleShape))
+                        Spacer(Modifier.width(8.dp))
+                        Text(day.format(Date(e.begin)).uppercase(Locale.ITALIAN) + "  " + (if (e.allDay) "tutto il giorno" else hm.format(Date(e.begin))),
+                            color = accent2, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.width(150.dp))
+                        Text(e.title + if (e.location.isNotBlank()) " • ${e.location}" else "", color = Color.White, fontSize = 12.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun NodesCard() {
+        if (osNodesTxt.isBlank()) return
+        NeonCard(Modifier.fillMaxWidth(), Stroke1) {
+            CardTitle("NODI DI RETE")
+            val list = osNodes.ifEmpty { OsData.parseNodes(osNodesTxt) }
+            list.forEach { n ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val c = when (n.online) { true -> Green; false -> NeonRed; null -> Muted }
+                    Box(Modifier.size(8.dp).background(c, CircleShape))
+                    Spacer(Modifier.width(8.dp))
+                    Text(n.name, color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Text(when (n.online) { true -> "${n.ms} ms"; false -> "OFFLINE"; null -> "…" }, color = c, fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace)
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun PinnedCard() {
+        val apps = pinned.mapNotNull { p -> osApps.firstOrNull { it.pkg == p } }
+        NeonCard(Modifier.fillMaxWidth(), Stroke1) {
+            CardTitle("APP FISSATE")
+            if (apps.isEmpty()) Text("Nella schermata App tieni premuta un'icona per fissarla qui.", color = Muted, fontSize = 11.sp)
+            else LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) { items(apps, key = { it.pkg }) { AppIcon(it) } }
+        }
+    }
+
+    @OptIn(ExperimentalFoundationApi::class)
+    @Composable
+    private fun AppIcon(a: OsData.App) {
+        val haptic = LocalHapticFeedback.current
+        Column(Modifier.width(84.dp).clip(RoundedCornerShape(12.dp))
+            .combinedClickable(onClick = { openOsApp(a.pkg) }, onLongClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress); togglePin(a.pkg)
+            }).padding(vertical = 8.dp, horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Box {
+                val bmp = remember(a.icon) { a.icon?.asImageBitmap() }
+                if (bmp != null) Image(bmp, a.label, Modifier.size(52.dp))
+                else Icon(Icons.Rounded.Android, a.label, tint = accent2, modifier = Modifier.size(52.dp))
+                if (a.pkg in pinned) Box(Modifier.align(Alignment.TopEnd).size(10.dp).background(accent, CircleShape))
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(a.label, color = Color.White, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+        }
+    }
+
+    @Composable
+    private fun AppsScreen() {
+        var q by remember { mutableStateOf("") }
+        val list = remember(osApps, q) { if (q.isBlank()) osApps else osApps.filter { it.label.contains(q.trim(), ignoreCase = true) } }
+        LaunchedEffect(Unit) { if (osApps.isEmpty()) osApps = withContext(Dispatchers.IO) { OsData.loadApps(this@MainActivity) } }
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            ScreenHeader("APP • ${osApps.size}", null)
+            OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, colors = fieldColors(),
+                label = { Text("Cerca un'app (Invio per aprire la prima)") },
+                leadingIcon = { Icon(Icons.Rounded.Search, null, tint = Muted) },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { list.firstOrNull()?.let { openOsApp(it.pkg); q = "" } }))
+            Text("Tocca per aprire • tieni premuto per fissare in Home", color = Muted, fontSize = 10.sp,
+                modifier = Modifier.padding(vertical = 6.dp))
+            LazyVerticalGrid(GridCells.Adaptive(88.dp), Modifier.weight(1f).fillMaxWidth()) {
+                items(list.size, key = { list[it].pkg }) { i -> AppIcon(list[i]) }
+            }
+        }
+    }
+
+    @Composable
+    private fun FilesScreen() {
+        var dir by remember { mutableStateOf(OsData.root) }
+        var q by remember { mutableStateOf("") }
+        var results by remember { mutableStateOf<List<File>?>(null) }
+        var searching by remember { mutableStateOf(false) }
+        val tick = resumeTick
+        val access = remember(tick) { OsData.hasFilesAccess() }
+        val atRoot = dir.absolutePath == OsData.root.absolutePath
+        BackHandler(enabled = results != null || !atRoot) {
+            if (results != null) { results = null; q = "" } else dir = dir.parentFile ?: OsData.root
+        }
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            ScreenHeader("FILE", if (!atRoot) ({ dir = dir.parentFile ?: OsData.root }) else null)
+            if (!access) {
+                NeonCard(Modifier.fillMaxWidth(), accent) {
+                    Text("JARVIS ha bisogno dell'accesso a tutti i file per mostrarli, cercarli e aprirli (anche a voce).",
+                        color = Color.White, fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { tryStart(OsData.filesAccessIntent(this@MainActivity)) }) {
+                        Text("CONCEDI ACCESSO", color = accent2, fontSize = 12.sp)
+                    }
+                }
+            } else {
+                OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, colors = fieldColors(),
+                    label = { Text("Cerca per nome in tutta la memoria") },
+                    leadingIcon = { Icon(Icons.Rounded.Search, null, tint = Muted) },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = {
+                        if (q.isNotBlank()) { searching = true; scope.launch {
+                            results = withContext(Dispatchers.IO) { OsData.search(q, 80) }; searching = false
+                        } }
+                    }))
+                val rel = dir.absolutePath.removePrefix(OsData.root.absolutePath).ifEmpty { "/" }
+                Text(if (searching) "Ricerca…" else if (results != null) "${results!!.size} risultati per \"$q\"" else "Memoria interna$rel",
+                    color = accent2, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(vertical = 6.dp))
+                val listing = remember(dir, tick) { OsData.list(dir) }
+                val shown = results ?: listing
+                val fmt = SimpleDateFormat("d MMM yyyy", Locale.ITALIAN)
+                LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    items(shown) { f ->
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable {
+                            if (f.isDirectory) { dir = f; results = null; q = "" }
+                            else if (!OsData.open(this@MainActivity, f)) sys("Nessuna app per aprire ${f.name}.")
+                        }.padding(vertical = 8.dp, horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(if (f.isDirectory) Icons.Rounded.Folder else Icons.Rounded.InsertDriveFile, null,
+                                tint = if (f.isDirectory) accent2 else Muted, modifier = Modifier.size(24.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(f.name, color = Color.White, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(if (results != null) f.parent?.removePrefix(OsData.root.absolutePath) ?: "" else fmt.format(Date(f.lastModified())),
+                                    color = Muted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            if (f.isFile) Text(OsData.size(f), color = Muted, fontSize = 10.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun JarvisOsCard() {
+        val tick = resumeTick
+        NeonCard(Modifier.fillMaxWidth(), accent) {
+            Text("JARVIS OS — LAUNCHER TABLET", color = accent2, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+            Text("Usa JARVIS come schermata Home: HUD, agenda, meteo, app, file e Claude sempre in primo piano. Da attivare solo sul tablet.",
+                color = Muted, fontSize = 11.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Modalità launcher", Modifier.weight(1f), color = Color.White, fontSize = 13.sp)
+                Switch(osEnabled, {
+                    OsData.setLauncherEnabled(this@MainActivity, it); osEnabled = it
+                    if (it) tryStart(Intent(Settings.ACTION_HOME_SETTINGS))
+                }, colors = SwitchDefaults.colors(checkedTrackColor = accent2))
+            }
+            val files = remember(tick) { OsData.hasFilesAccess() }
+            val write = remember(tick) { OsData.canWriteSettings(this@MainActivity) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { tryStart(Intent(Settings.ACTION_HOME_SETTINGS)) }, Modifier.weight(1f)) {
+                    Text("HOME PREDEFINITA", color = accent2, fontSize = 11.sp)
+                }
+                OutlinedButton(onClick = { tryStart(OsData.filesAccessIntent(this@MainActivity)) }, Modifier.weight(1f)) {
+                    Text(if (files) "FILE ✓" else "ACCESSO FILE", color = if (files) Green else accent2, fontSize = 11.sp)
+                }
+                OutlinedButton(onClick = { tryStart(OsData.writeSettingsIntent(this@MainActivity)) }, Modifier.weight(1f)) {
+                    Text(if (write) "LUMINOSITÀ ✓" else "LUMINOSITÀ", color = if (write) Green else accent2, fontSize = 11.sp)
+                }
+            }
+            OutlinedTextField(osCity, { osCity = it; prefs.edit().putString("os_city", it.trim()).apply() },
+                Modifier.fillMaxWidth(), singleLine = true, label = { Text("Città (meteo)") }, colors = fieldColors())
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(osLat, { osLat = it; prefs.edit().putString("os_lat", it.trim()).apply(); osWeather = null },
+                    Modifier.weight(1f), singleLine = true, label = { Text("Latitudine") }, colors = fieldColors())
+                OutlinedTextField(osLon, { osLon = it; prefs.edit().putString("os_lon", it.trim()).apply(); osWeather = null },
+                    Modifier.weight(1f), singleLine = true, label = { Text("Longitudine") }, colors = fieldColors())
+            }
+            OutlinedTextField(osNodesTxt, { osNodesTxt = it; prefs.edit().putString("os_nodes", it).apply() },
+                Modifier.fillMaxWidth().heightIn(min = 90.dp), label = { Text("Nodi di rete: Nome|http://ip:porta (uno per riga)") },
+                colors = fieldColors())
+            Text("Es. PC JARVIS|http://192.168.1.10:8767  •  Pi 5|http://192.168.1.20  •  Pi-hole|http://192.168.1.20/admin",
+                color = Muted, fontSize = 10.sp)
+        }
+    }
+
     // ═════════════════════════ Components ═════════════════════════
     @Composable
     private fun BottomNav() {
-        val items = listOf(Triple(Screen.HOME, Icons.Rounded.Home, "Home"), Triple(Screen.CHAT, Icons.Rounded.Forum, "Chat"),
+        val items = if (launcherMode) listOf(Triple(Screen.HOME, Icons.Rounded.Home, "Home"), Triple(Screen.CHAT, Icons.Rounded.Forum, "Chat"),
+            Triple(Screen.APPS, Icons.Rounded.Apps, "App"), Triple(Screen.FILES, Icons.Rounded.Folder, "File"),
+            Triple(Screen.MODULES, Icons.Rounded.Dashboard, "Moduli"), Triple(Screen.SETTINGS, Icons.Rounded.Settings, "Sistema"))
+        else listOf(Triple(Screen.HOME, Icons.Rounded.Home, "Home"), Triple(Screen.CHAT, Icons.Rounded.Forum, "Chat"),
             Triple(Screen.MODULES, Icons.Rounded.Apps, "Moduli"), Triple(Screen.DEVICE, Icons.Rounded.PhoneAndroid, "Dispositivo"),
             Triple(Screen.SETTINGS, Icons.Rounded.Settings, "Sistema"))
         Column(Modifier.fillMaxWidth().background(Panel)) {
