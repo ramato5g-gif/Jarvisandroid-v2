@@ -42,13 +42,14 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
-      - name: Build release APK
-        run: gradle --no-daemon --stacktrace :app:assembleRelease
+      - name: Build release APK (telefono + orologio)
+        run: gradle --no-daemon --stacktrace :app:assembleRelease :wear:assembleRelease
 
       - name: Rinomina APK
         run: |
           mkdir -p out
           cp app/build/outputs/apk/release/app-release.apk "out/JARVIS-NEXUS-v3.0.${{ github.run_number }}.apk"
+          cp wear/build/outputs/apk/release/wear-release.apk "out/JARVIS-WATCH-v3.0.${{ github.run_number }}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
