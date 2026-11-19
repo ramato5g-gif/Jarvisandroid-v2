@@ -77,6 +77,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -1159,7 +1160,16 @@ Usa solo queste azioni e una sola per risposta. Non dire di aver fatto cose fuor
             screen = when (screen) { Screen.MODULE, Screen.MEMORY, Screen.AUTOMATE, Screen.REPORTS, Screen.SOMNO -> Screen.MODULES; else -> Screen.HOME }
         }
         MaterialTheme(colorScheme = darkColorScheme(primary = accent, secondary = accent2, background = Bg, surface = Panel, onSurface = Color.White)) {
-            Column(Modifier.fillMaxSize().background(Bg).systemBarsPadding().imePadding()) {
+            // Sui tablet, quando JARVIS è la Home e la navigazione è a 3 tasti, la taskbar di Launcher3
+            // disegna i tasti più in alto dell'inset navigationBars dichiarato (es. SM-P610: finestra
+            // Taskbar alta 134dp, inset 56dp), coprendo la BottomNav. In quel caso riserviamo l'altezza piena.
+            val density = LocalDensity.current
+            val threeButtonNav = remember { Settings.Secure.getInt(contentResolver, "navigation_mode", 0) == 0 }
+            val reservePx = if (launcherMode && threeButtonNav) with(density) { 134.dp.roundToPx() } else 0
+            val bottomPx = maxOf(WindowInsets.navigationBars.getBottom(density), WindowInsets.ime.getBottom(density), reservePx)
+            Column(Modifier.fillMaxSize().background(Bg)
+                .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                .padding(bottom = with(density) { bottomPx.toDp() })) {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     Crossfade(targetState = screen, label = "screen") { s ->
                         when (s) {
