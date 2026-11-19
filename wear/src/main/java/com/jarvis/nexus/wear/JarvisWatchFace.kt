@@ -101,10 +101,12 @@ private class VisoreRenderer(
     class Assets : Renderer.SharedAssets { override fun onDestroy() {} }
 
     // Roboto incluso nell'APK: sui Galaxy il font di sistema non è Roboto
-    private fun font(file: String, wght: Int): Typeface = try {
-        Typeface.Builder(ctx.assets, "fonts/$file").setFontVariationSettings("'wght' $wght").build()
+    private fun font(file: String, wght: Int, wdth: Int = 100): Typeface = try {
+        Typeface.Builder(ctx.assets, "fonts/$file").setFontVariationSettings(
+            if (file == "Roboto.ttf") "'wght' $wght, 'wdth' $wdth" else "'wght' $wght").build()
     } catch (_: Exception) { Typeface.DEFAULT }
-    private val thin = font("Roboto.ttf", 100)
+    // Ora in Roboto Thin un po' stretto: lascia spazio agli indicatori ai lati
+    private val thin = font("Roboto.ttf", 100, 75)
     private val light = font("Roboto.ttf", 300)
     private val condLight = font("RobotoCondensed.ttf", 300)
     private val cond = font("RobotoCondensed.ttf", 400)
@@ -181,7 +183,7 @@ private class VisoreRenderer(
         if (sw > 0.5f) arc(c, rad, s0, sw, CYAN, 3f, blur = 8f)
         val end = if (reverse) s0 else s0 + sw
         dot(c, px(rad, end), py(rad, end), 3.5f, ICE, CYAN, 10f)
-        val lx = px(rad - 36 * k, from + sweep / 2); val ly = py(rad - 36 * k, from + sweep / 2)
+        val lx = px(rad - 26 * k, from + sweep / 2); val ly = py(rad - 26 * k, from + sweep / 2)
         text(c, value.take(6), lx, ly + 3 * k, light, 17f, ICE)
         text(c, (title ?: label).uppercase().take(10), lx, ly + 17 * k, cond, 8f, TEAL, 2.5f)
     }
@@ -261,14 +263,14 @@ private class VisoreRenderer(
         }
 
         // Ora: Roboto Thin sfumata ghiaccio → ciano con bagliore
-        txt.typeface = thin; txt.textSize = 112 * k; txt.letterSpacing = 0f
+        txt.typeface = thin; txt.textSize = 100 * k; txt.letterSpacing = 0f
         if (amb) { txt.shader = null; txt.color = 0xFFD0D0D0.toInt(); txt.clearShadowLayer() }
         else {
             txt.color = Color.WHITE
             txt.shader = LinearGradient(0f, cy - 50 * k, 0f, cy + 40 * k, ICE, 0xFF5FE9FF.toInt(), Shader.TileMode.CLAMP)
             txt.setShadowLayer(22 * 0.85f * k, 0f, 0f, cyanA(0.6f))
         }
-        canvas.drawText("%02d:%02d".format(zonedDateTime.hour, zonedDateTime.minute), cx, cy + 38 * k, txt)
+        canvas.drawText("%02d:%02d".format(zonedDateTime.hour, zonedDateTime.minute), cx, cy + 36 * k, txt)
         txt.shader = null; txt.clearShadowLayer()
 
         // Data tra due filetti
