@@ -62,4 +62,6 @@ dependencies {
     // Report mensili dal PC: sincronizzazione periodica e QR di abbinamento (scanner Google, senza permesso fotocamera)
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // JARVIS da polso: ponte con il Galaxy Watch
+    implementation("com.google.android.gms:play-services-wearable:19.0.0")
 }

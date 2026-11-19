@@ -144,3 +144,18 @@ e dei dispositivi richiede una verifica effettiva.
 - Il modello non è incluso nell'APK e va importato dall'interfaccia. Il fallback funziona solo dopo importazione e test.
 - **Privacy:** Claude invia i messaggi ad Anthropic. La API key è nelle SharedPreferences private, non cifrata a livello applicativo; per produzione si consiglia backend con autenticazione e limiti di utilizzo. Non includere chiavi in GitHub, screenshot o ZIP.
 - Progetto non compilato/testato su dispositivo.
+
+## JARVIS da polso — Galaxy Watch (modulo `wear`)
+App Wear OS che usa **lo stesso cervello del telefono**: l'orologio manda la domanda via Wearable Data Layer,
+`WearBridgeService` sul telefono risponde con Claude Haiku (chiave locale) e la risposta torna al polso, con voce e vibrazione.
+
+- **Tocca** il nucleo = parla · **Tieni premuto** = tastiera/dettatura · **Ghiera** = scorre la risposta.
+- Comandi locali come sul telefono: report Sapio, appuntamenti SomnoDesk, "timer 10 minuti", "sveglia alle 7".
+- Azioni dal polso: timer e sveglie (sull'orologio); eventi in calendario, note, attività, torcia e volume (sul telefono).
+- Memoria breve della conversazione (8 messaggi, si azzera dopo 10 minuti).
+
+**Installazione** (la Release contiene anche `JARVIS-WATCH-*.apk`, firmato con la stessa chiave del telefono — obbligatorio):
+1. Aggiorna JARVIS sul telefono con l'APK della stessa Release.
+2. Orologio: Impostazioni → Opzioni sviluppatore → Debug ADB + Debug wireless → Associa nuovo dispositivo.
+3. Dal PC: `adb pair IP:PORTA CODICE`, poi `adb connect IP:PORTA` e `adb install JARVIS-WATCH-*.apk`.
+4. Opzionale: Impostazioni → Funzioni avanzate → Personalizza tasti → doppia pressione tasto Home = JARVIS.
