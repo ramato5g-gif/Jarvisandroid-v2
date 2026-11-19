@@ -1,9 +1,12 @@
 package com.jarvis.nexus
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
+import android.provider.ContactsContract
 import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
@@ -16,14 +19,14 @@ import java.util.Locale
 /**
  * Ponte JARVIS ↔ Galaxy Watch (Wearable Data Layer).
  * L'orologio manda la domanda su /jarvis/ask, il telefono usa lo stesso cervello (Claude Haiku, chiave locale)
- * e risponde su /jarvis/reply con JSON {text, engine, action?}. Le azioni timer/sveglia le esegue l'orologio.
+ * e risponde su /jarvis/reply con JSON {text, engine, action?}. Timer, sveglie, apertura app e chiamate le esegue l'orologio.
  */
 class WearBridgeService : WearableListenerService() {
 
     companion object {
         const val PATH_ASK = "/jarvis/ask"
         const val PATH_REPLY = "/jarvis/reply"
-        private val WATCH_ACTIONS = setOf("timer", "alarm")
+        private val WATCH_ACTIONS = setOf("timer", "alarm", "open", "call")
         private val PHONE_ACTIONS = setOf("event", "note", "task", "torch", "volume")
 
         // Breve memoria della conversazione dal polso (si azzera dopo 10 minuti di silenzio)
@@ -60,7 +63,7 @@ class WearBridgeService : WearableListenerService() {
         ReportSync.answer(this, n)?.let { return reply(it, "REPORT") }
         SomnoApts.answer(this, n)?.let { return reply(it, "SOMNO") }
         Commands.parse(q)?.let { cmd ->
-            if (cmd.type in WATCH_ACTIONS) return reply("Fatto.", "COMANDO", cmd)
+            if (cmd.type in WATCH_ACTIONS) forWatch(cmd).let { return reply(it.second, "COMANDO", it.first) }
             if (cmd.type in PHONE_ACTIONS) return reply(execute(cmd), "COMANDO")
         }
 
@@ -82,7 +85,7 @@ class WearBridgeService : WearableListenerService() {
 
         return when {
             cmd == null -> reply(text.ifBlank { "Fatto." }, "HAIKU")
-            cmd.type in WATCH_ACTIONS -> reply(text.ifBlank { "Fatto." }, "HAIKU", cmd)
+            cmd.type in WATCH_ACTIONS -> forWatch(cmd).let { reply(text.ifBlank { it.second }, "HAIKU", it.first) }
             cmd.type in PHONE_ACTIONS -> reply(execute(cmd).let { r -> if (text.isBlank()) r else text }, "HAIKU")
             else -> reply(text.ifBlank { "Questo devo farlo dal telefono." }, "HAIKU")
         }
@@ -104,12 +107,49 @@ AZIONE: {json su una sola riga}
 seguita da una breve frase di conferma. Azioni disponibili dal polso:
 {"type":"timer","seconds":600,"label":"..."}
 {"type":"alarm","hour":7,"minute":30,"label":"..."}
+{"type":"open","app":"nome dell'app dell'orologio"}
+{"type":"call","who":"nome contatto o numero"}
 {"type":"event","title":"...","start":"yyyy-MM-ddTHH:mm","end":"yyyy-MM-ddTHH:mm"}
 {"type":"note","text":"..."}
 {"type":"task","text":"..."}
 {"type":"torch","on":true}
 {"type":"volume","level":50}
-Usa solo queste azioni, una per risposta. Per chiamate, messaggi, navigazione o app spiega che deve usare il telefono. Per domande normali rispondi senza riga AZIONE."""
+Usa solo queste azioni, una per risposta. Per messaggi, WhatsApp o navigazione spiega che deve usare il telefono. Per domande normali rispondi senza riga AZIONE."""
+    }
+
+    /** Prepara l'azione per l'orologio: per le chiamate il telefono risolve il numero dalla rubrica. */
+    private fun forWatch(c: Cmd): Pair<Cmd, String> = when (c.type) {
+        "open" -> c to "Apro ${c["app"]}."
+        "call" -> {
+            val who = c["who"]
+            val num = if (who.count { it.isDigit() } >= 5) who.filter { it.isDigit() || it == '+' } else lookupNumber(who)
+            if (num.isNullOrBlank()) c to "Non trovo $who in rubrica: la chiamata va fatta dal telefono."
+            else Cmd("call", c.args + ("number" to num)) to "Chiamo $who."
+        }
+        else -> c to "Fatto."
+    }
+
+    private fun lookupNumber(name: String): String? {
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null
+        val target = Commands.norm(name)
+        if (target.isEmpty()) return null
+        var best: String? = null
+        var bestScore = Int.MAX_VALUE
+        val proj = arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER)
+        contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, proj, null, null, null)?.use { cur ->
+            while (cur.moveToNext()) {
+                val l = Commands.norm(cur.getString(0) ?: continue)
+                val num = cur.getString(1) ?: continue
+                val sc = when {
+                    l == target -> 0
+                    l.startsWith(target) -> 1
+                    l.contains(target) -> 2
+                    else -> { val d = Commands.lev(l, target); if (d <= 2) 3 + d else Int.MAX_VALUE }
+                }
+                if (sc < bestScore) { bestScore = sc; best = num }
+            }
+        }
+        return best?.filter { it.isDigit() || it == '+' }
     }
 
     // ───── Azioni eseguibili dal telefono senza aprire schermate ─────
@@ -150,10 +190,13 @@ Usa solo queste azioni, una per risposta. Per chiamate, messaggi, navigazione o 
         }
     } catch (e: Exception) { "Azione non riuscita: ${e.message}" }
 
+    // MainActivity del telefono ascolta le modifiche a "notes"/"tasks" e ricarica le liste: nessuna voce persa
     private fun appendList(key: String, bullet: String, text: String) {
         if (text.isBlank()) return
-        val cur = prefs.getString(key, "") ?: ""
-        prefs.edit().putString(key, if (cur.isBlank()) "$bullet$text" else "$cur\n$bullet$text").apply()
+        synchronized(WearBridgeService::class.java) {
+            val cur = prefs.getString(key, "") ?: ""
+            prefs.edit().putString(key, if (cur.isBlank()) "$bullet$text" else "$cur\n$bullet$text").commit()
+        }
     }
 
     private fun parseIso(v: String): Long? = try {

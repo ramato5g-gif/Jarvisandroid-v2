@@ -151,8 +151,18 @@ App Wear OS che usa **lo stesso cervello del telefono**: l'orologio manda la dom
 
 - **Tocca** il nucleo = parla · **Tieni premuto** = tastiera/dettatura · **Ghiera** = scorre la risposta.
 - Comandi locali come sul telefono: report Sapio, appuntamenti SomnoDesk, "timer 10 minuti", "sveglia alle 7".
-- Azioni dal polso: timer e sveglie (sull'orologio); eventi in calendario, note, attività, torcia e volume (sul telefono).
+- Azioni dal polso: timer, sveglie, "apri <app dell'orologio>" e "chiama <contatto>" (sull'orologio: il telefono cerca il numero
+  in rubrica e l'orologio apre il tastierino; se manca, JARVIS spiega che la chiamata va fatta dal telefono);
+  eventi in calendario, note, attività, torcia e volume (sul telefono). Note e attività compaiono subito nell'app del telefono.
 - Memoria breve della conversazione (8 messaggi, si azzera dopo 10 minuti).
+- **Stato collegamento**: all'avvio l'orologio manda `__ping__`; puntino verde sotto "J.A.R.V.I.S." = telefono pronto,
+  rosso = nessuna risposta entro 5 s (telefono scollegato o app JARVIS non aggiornata, con messaggio esplicativo).
+- **Tile "JARVIS"**: anello HUD ciano con l'ultima risposta; il tocco apre JARVIS già in ascolto.
+  Aggiungila tenendo premuto il quadrante → scorri i riquadri → **+** → JARVIS.
+- **Complication "JARVIS"**: icona che apre l'app, da mettere su qualsiasi quadrante (Modifica quadrante → Complicazioni → JARVIS).
+- **Quadrante "JARVIS HUD"**: ora digitale, data, secondi e archi HUD animati, ultima risposta, puntino di collegamento
+  e due complication personalizzabili (default batteria e passi). Tocco sull'ora = JARVIS in ascolto.
+  In ambient mostra solo ora, data e tacche. Selezionalo tenendo premuto il quadrante attuale → scorri → JARVIS HUD.
 
 **Installazione** (la Release contiene anche `JARVIS-WATCH-*.apk`, firmato con la stessa chiave del telefono — obbligatorio):
 1. Aggiorna JARVIS sul telefono con l'APK della stessa Release.

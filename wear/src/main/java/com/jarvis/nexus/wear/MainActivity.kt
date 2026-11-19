@@ -3,6 +3,7 @@ package com.jarvis.nexus.wear
 import android.app.RemoteInput
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -34,7 +35,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -74,6 +77,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
+import java.text.Normalizer
 import java.util.Locale
 
 private val Cyan = Color(0xFF00E5FF)
@@ -87,6 +91,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     companion object {
         const val PATH_ASK = "/jarvis/ask"
         const val PATH_REPLY = "/jarvis/reply"
+        const val EXTRA_AUTO_LISTEN = "autoListen"
         private const val INPUT_KEY = "q"
     }
 
@@ -95,13 +100,20 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var answer by mutableStateOf("")
     private var engine by mutableStateOf("")
     private var voiceOn by mutableStateOf(true)
+    private var link by mutableStateOf<Boolean?>(null)   // null = verifica in corso
+    private var linkMsg by mutableStateOf("")
+    private var lastPing = 0L
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private val prefs by lazy { getSharedPreferences("jarvis_watch", MODE_PRIVATE) }
 
     @Volatile private var pending: CompletableDeferred<String>? = null
+    @Volatile private var pingPending: CompletableDeferred<String>? = null
     private val listener = MessageClient.OnMessageReceivedListener { ev ->
-        if (ev.path == PATH_REPLY) pending?.complete(String(ev.data, Charsets.UTF_8))
+        if (ev.path != PATH_REPLY) return@OnMessageReceivedListener
+        val s = String(ev.data, Charsets.UTF_8)
+        val isPing = try { JSONObject(s).optString("engine") == "PING" } catch (_: Exception) { false }
+        if (isPing) pingPending?.complete(s) else pending?.complete(s)
     }
 
     private val speech = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -117,7 +129,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         super.onCreate(savedInstanceState)
         voiceOn = prefs.getBoolean("voice", true)
         tts = TextToSpeech(this, this)
+        link = WatchPrefs.link(this)
         setContent { Ui() }
+        if (intent?.getBooleanExtra(EXTRA_AUTO_LISTEN, false) == true) listen()
+    }
+
+    // Tile e quadrante riaprono l'activity (singleTask) chiedendo l'ascolto immediato
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_AUTO_LISTEN, false) && state != St.THINKING) listen()
     }
 
     override fun onInit(status: Int) {
@@ -125,7 +145,36 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (ttsReady) tts?.language = Locale.ITALIAN
     }
 
-    override fun onResume() { super.onResume(); Wearable.getMessageClient(this).addListener(listener) }
+    override fun onResume() {
+        super.onResume()
+        Wearable.getMessageClient(this).addListener(listener)
+        if (link != true || System.currentTimeMillis() - lastPing > 120_000L) ping()
+    }
+
+    /** Verifica il collegamento: il telefono aggiornato risponde a "__ping__" entro 5 s. */
+    private fun ping() {
+        lastPing = System.currentTimeMillis()
+        lifecycleScope.launch {
+            val ok = try {
+                val nodes = Wearable.getNodeClient(this@MainActivity).connectedNodes.await()
+                val node = nodes.firstOrNull { it.isNearby } ?: nodes.firstOrNull()
+                if (node == null) { linkMsg = "Telefono non collegato: controlla Bluetooth e Galaxy Wearable."; false }
+                else {
+                    val d = CompletableDeferred<String>()
+                    pingPending = d
+                    Wearable.getMessageClient(this@MainActivity).sendMessage(node.id, PATH_ASK, "__ping__".toByteArray(Charsets.UTF_8)).await()
+                    withTimeout(5_000) { d.await() }
+                    true
+                }
+            } catch (e: TimeoutCancellationException) {
+                linkMsg = "Il telefono non risponde: aggiorna JARVIS sul telefono con l'APK della stessa Release."; false
+            } catch (e: Exception) {
+                linkMsg = "Collegamento non riuscito: ${e.message ?: "errore"}"; false
+            }
+            link = ok
+            WatchPrefs.saveLink(this@MainActivity, ok)
+        }
+    }
     override fun onPause() { Wearable.getMessageClient(this).removeListener(listener); tts?.stop(); super.onPause() }
     override fun onDestroy() { tts?.shutdown(); super.onDestroy() }
 
@@ -157,13 +206,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             val res = try {
                 JSONObject(withTimeout(55_000) { sendToPhone(q) })
             } catch (e: TimeoutCancellationException) {
+                link = false; WatchPrefs.saveLink(this@MainActivity, false)
                 JSONObject().put("text", "Il telefono non risponde. Controlla di avere l'ultima versione di JARVIS sul telefono.").put("engine", "ERRORE")
             } catch (e: Exception) {
                 JSONObject().put("text", e.message ?: "Errore di collegamento.").put("engine", "ERRORE")
             }
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            res.optJSONObject("action")?.let { runAction(it) }
-            show(res.optString("text").ifBlank { "Fatto." }, res.optString("engine"))
+            if (res.optString("engine") != "ERRORE") { link = true; WatchPrefs.saveLink(this@MainActivity, true) }
+            // Se l'azione sull'orologio non riesce, il suo messaggio sostituisce la risposta del telefono
+            val fail = res.optJSONObject("action")?.let { runAction(it) }
+            show(fail ?: res.optString("text").ifBlank { "Fatto." }, res.optString("engine"))
         }
     }
 
@@ -179,31 +231,69 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun show(text: String, eng: String) {
         answer = text; engine = eng; state = St.ANSWER
+        if (eng != "ERRORE") WatchPrefs.saveLast(this, text)
         try { getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE)) } catch (_: Exception) { }
         if (voiceOn) speak(text)
     }
 
     private fun speak(text: String) { if (ttsReady) tts?.speak(text.take(600), TextToSpeech.QUEUE_FLUSH, null, "jarvis") }
 
-    /** Timer e sveglie partono direttamente sull'orologio. */
-    private fun runAction(a: JSONObject) {
+    /** Timer, sveglie, app e chiamate partono direttamente sull'orologio. Ritorna un messaggio solo se fallisce. */
+    private fun runAction(a: JSONObject): String? {
         val label = a.optString("label").ifBlank { "JARVIS" }
-        try {
+        return try {
             when (a.optString("type")) {
                 "timer" -> {
-                    val sec = a.optString("seconds").toIntOrNull() ?: return
+                    val sec = a.optString("seconds").toIntOrNull() ?: return null
                     startActivity(Intent(AlarmClock.ACTION_SET_TIMER).putExtra(AlarmClock.EXTRA_LENGTH, sec)
                         .putExtra(AlarmClock.EXTRA_MESSAGE, label).putExtra(AlarmClock.EXTRA_SKIP_UI, true))
+                    null
                 }
                 "alarm" -> {
-                    val h = a.optString("hour").toIntOrNull() ?: return
+                    val h = a.optString("hour").toIntOrNull() ?: return null
                     val m = a.optString("minute").toIntOrNull() ?: 0
                     startActivity(Intent(AlarmClock.ACTION_SET_ALARM).putExtra(AlarmClock.EXTRA_HOUR, h)
                         .putExtra(AlarmClock.EXTRA_MINUTES, m).putExtra(AlarmClock.EXTRA_MESSAGE, label)
                         .putExtra(AlarmClock.EXTRA_SKIP_UI, true))
+                    null
                 }
+                "open" -> openApp(a.optString("app"))
+                "call" -> {
+                    val num = a.optString("number")
+                    val dial = Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(num)))
+                    when {
+                        num.isBlank() -> null   // il telefono ha già spiegato che il contatto non è in rubrica
+                        dial.resolveActivity(packageManager) == null -> "Sull'orologio non c'è il tastierino: la chiamata va fatta dal telefono."
+                        else -> { startActivity(dial); null }
+                    }
+                }
+                else -> null
             }
-        } catch (_: Exception) { }
+        } catch (e: Exception) { "Azione non riuscita sull'orologio: ${e.message ?: "errore"}" }
+    }
+
+    private fun norm(s: String) = Normalizer.normalize(s.lowercase(Locale.ITALIAN), Normalizer.Form.NFD)
+        .replace(Regex("\\p{M}+"), "").replace(Regex("[^a-z0-9]"), "")
+
+    /** Cerca tra le app installate sull'orologio quella col nome più simile e la apre. */
+    private fun openApp(name: String): String? {
+        val target = norm(name)
+        if (target.isEmpty()) return "Quale app devo aprire?"
+        val apps = packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+        val best = apps.map { it to norm(it.loadLabel(packageManager).toString()) }
+            .filter { it.second.isNotEmpty() }
+            .map { (ri, l) -> ri to when {
+                l == target -> 0
+                l.startsWith(target) || target.startsWith(l) -> 1
+                l.contains(target) || target.contains(l) -> 2
+                else -> 9
+            } }
+            .filter { it.second < 9 }
+            .minByOrNull { it.second }?.first
+            ?: return "Non trovo l'app \"$name\" sull'orologio."
+        startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            .setClassName(best.activityInfo.packageName, best.activityInfo.name).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        return null
     }
 
     private fun toggleVoice() {
@@ -252,11 +342,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("J.A.R.V.I.S.", color = Cyan, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(54.dp))
+                // Stato collegamento: verde = telefono risponde, rosso = nessuna risposta, grigio = verifica
+                Spacer(Modifier.height(4.dp))
+                Box(Modifier.size(7.dp).background(
+                    when (link) { true -> Color(0xFF00E676); false -> Color(0xFFFF3B4E); null -> Color.DarkGray }, CircleShape))
+                Spacer(Modifier.height(43.dp))
                 Text(
                     when (state) { St.LISTENING -> "IN ASCOLTO"; St.THINKING -> "ELABORAZIONE"; else -> "TOCCA PER PARLARE" },
                     color = accent, fontSize = 10.sp, fontFamily = FontFamily.Monospace
                 )
+                if (link == false && state == St.IDLE) {
+                    Text(linkMsg, color = Color(0xFFFF8A80), fontSize = 9.sp, textAlign = TextAlign.Center, maxLines = 3,
+                        modifier = Modifier.padding(horizontal = 34.dp, vertical = 4.dp))
+                }
                 if (busy && heard.isNotBlank()) {
                     Text("“$heard”", color = Color.LightGray, fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 2,
                         modifier = Modifier.padding(horizontal = 30.dp, vertical = 4.dp))
